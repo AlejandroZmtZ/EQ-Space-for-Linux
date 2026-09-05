@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: eqspace
-Version: 0.1.0
-Summary: EQ-Space for Linux — parametric equalizer for PipeWire
-Requires-Python: >=3.10
-Requires-Dist: PySide6

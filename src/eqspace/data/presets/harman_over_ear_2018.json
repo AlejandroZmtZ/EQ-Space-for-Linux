@@ -1,0 +1,80 @@
+{
+  "name": "harman_over_ear_2018",
+  "description": "Harman over-ear 2018 target curve, fitted with 10 peaking bands.",
+  "research_basis": "Harman over-ear target (Olive, Welti & Khonsaripour, 2018 update); peaking-band fit of the published target curve relative to a flat 0 dB baseline.",
+  "bands": [
+    {
+      "band_type": "peaking",
+      "freq_hz": 30.0,
+      "gain_db": 7.08,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 60.3,
+      "gain_db": 6.31,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 121.1,
+      "gain_db": 3.7,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 243.3,
+      "gain_db": 0.81,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 488.8,
+      "gain_db": 0.1,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 982.0,
+      "gain_db": -0.1,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1973.0,
+      "gain_db": -0.18,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 3963.9,
+      "gain_db": 0.72,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 7963.8,
+      "gain_db": 0.82,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 16000.0,
+      "gain_db": -6.4,
+      "q": 2.0,
+      "enabled": true
+    }
+  ],
+  "spatial": {},
+  "mic": {},
+  "volume": 1.0
+}

@@ -1,0 +1,14 @@
+{
+  "name": "crossfeed_bauer",
+  "description": "Bauer stereophonic-to-binaural crossfeed for headphone listening to stereo mixes.",
+  "research_basis": "B. Bauer, 'Stereophonic Earphones and Binaural Loudspeakers', J. Audio Eng. Soc. 9(2), 1961 \u2014 low-passed crossfeed (~700 Hz, ~-4.5 dB).",
+  "bands": [],
+  "spatial": {
+    "type": "crossfeed",
+    "algorithm": "bauer",
+    "low_cut_hz": 700.0,
+    "level_db": -4.5
+  },
+  "mic": {},
+  "volume": 1.0
+}

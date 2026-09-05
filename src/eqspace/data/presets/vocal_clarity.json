@@ -1,0 +1,80 @@
+{
+  "name": "vocal_clarity",
+  "description": "2-4 kHz presence lift with a gentle low cut to bring vocals forward.",
+  "research_basis": "Speech intelligibility research highlights the 2-5 kHz consonant region (e.g. ANSI S3.5 speech intelligibility weighting).",
+  "bands": [
+    {
+      "band_type": "peaking",
+      "freq_hz": 30.0,
+      "gain_db": -3.23,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 60.3,
+      "gain_db": -3.17,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 121.1,
+      "gain_db": -2.8,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 243.3,
+      "gain_db": -1.04,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 488.8,
+      "gain_db": 0.37,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 982.0,
+      "gain_db": 1.39,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1973.0,
+      "gain_db": 2.59,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 3963.9,
+      "gain_db": 4.37,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 7963.8,
+      "gain_db": 1.14,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 16000.0,
+      "gain_db": 0.35,
+      "q": 2.0,
+      "enabled": true
+    }
+  ],
+  "spatial": {},
+  "mic": {},
+  "volume": 1.0
+}

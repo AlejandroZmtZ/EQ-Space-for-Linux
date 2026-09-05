@@ -1,0 +1,80 @@
+{
+  "name": "late_night",
+  "description": "Reduced bass and treble extremes with a slight mid focus for quiet listening.",
+  "research_basis": "Inverse of the ISO 226 equal-loudness contour direction: at low SPL the ear needs less extreme-band energy for balance.",
+  "bands": [
+    {
+      "band_type": "peaking",
+      "freq_hz": 30.0,
+      "gain_db": -5.13,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 60.3,
+      "gain_db": -4.51,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 121.1,
+      "gain_db": -3.7,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 243.3,
+      "gain_db": -1.77,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 488.8,
+      "gain_db": 0.07,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 982.0,
+      "gain_db": 1.19,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1973.0,
+      "gain_db": 0.11,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 3963.9,
+      "gain_db": -0.98,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 7963.8,
+      "gain_db": -4.3,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 16000.0,
+      "gain_db": -6.61,
+      "q": 2.0,
+      "enabled": true
+    }
+  ],
+  "spatial": {},
+  "mic": {},
+  "volume": 1.0
+}

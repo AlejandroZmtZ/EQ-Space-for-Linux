@@ -1,0 +1,80 @@
+{
+  "name": "bass_boost",
+  "description": "+6 dB low-shelf-style boost below ~120 Hz for bass-heavy listening.",
+  "research_basis": "Generic consumer bass-shelf voicing; not tied to a specific study.",
+  "bands": [
+    {
+      "band_type": "peaking",
+      "freq_hz": 30.0,
+      "gain_db": 6.46,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 60.3,
+      "gain_db": 6.18,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 121.1,
+      "gain_db": 6.2,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 243.3,
+      "gain_db": 2.95,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 488.8,
+      "gain_db": 0.45,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 982.0,
+      "gain_db": -0.06,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1973.0,
+      "gain_db": -0.03,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 3963.9,
+      "gain_db": -0.0,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 7963.8,
+      "gain_db": -0.0,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 16000.0,
+      "gain_db": -0.0,
+      "q": 2.0,
+      "enabled": true
+    }
+  ],
+  "spatial": {},
+  "mic": {},
+  "volume": 1.0
+}

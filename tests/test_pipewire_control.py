@@ -61,14 +61,31 @@ def test_set_default_sink_unknown_name_raises():
         set_default_sink("nope", registry=registry, runner=Recorder())
 
 
-def test_move_stream_sets_metadata_target():
+def _dump_with_serials(stream_serial: int, sink_serial: int) -> str:
+    data = json.loads(FIXTURE.read_text())
+    for entry in data:
+        props = (entry.get("info") or {}).get("props") or {}
+        if entry.get("id") == 71:
+            props["object.serial"] = stream_serial
+        elif entry.get("id") == 48:
+            props["object.serial"] = sink_serial
+    return json.dumps(data)
+
+
+def test_move_stream_sets_metadata_target_by_serial():
     rec = Recorder()
-    move_stream(71, 48, runner=rec)
+    registry = PipeWireRegistry(runner=Recorder(_dump_with_serials(7171, 4848)))
+    move_stream(71, 48, runner=rec, registry=registry)
     (cmd, _), = rec.calls
-    assert cmd[0] == "pw-metadata"
-    assert "71" in cmd
-    assert "target.object" in cmd
-    assert "48" in cmd
+    assert cmd == ["pw-metadata", "7171", "target.object", "4848"]
+
+
+def test_move_stream_unknown_node_raises():
+    registry = PipeWireRegistry(runner=Recorder(FIXTURE.read_text()))
+    with pytest.raises(PipeWireControlError, match="no such stream node"):
+        move_stream(999, 48, runner=Recorder(), registry=registry)
+    with pytest.raises(PipeWireControlError, match="no such sink node"):
+        move_stream(71, 999, runner=Recorder(), registry=registry)
 
 
 def test_command_failure_raises_control_error():

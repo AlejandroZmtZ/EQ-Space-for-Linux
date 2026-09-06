@@ -44,6 +44,7 @@ def test_parse_pw_dump_node_fields(dump_text):
         media_class="Audio/Sink",
         volume=1.0,
         mute=False,
+        serial=48,
     )
     source = snapshot.sources[0]
     assert source.volume == pytest.approx(0.65)
@@ -62,6 +63,18 @@ def test_parse_pw_dump_handles_missing_props_and_params(dump_text):
 def test_parse_pw_dump_rejects_non_list():
     with pytest.raises(PipeWireUnavailable):
         parse_pw_dump({"not": "a list"})
+
+
+def test_parse_pw_dump_skips_entries_with_malformed_id(dump_text):
+    data = json.loads(dump_text)
+    data.append({"id": None, "info": {"props": {"media.class": "Audio/Sink"}}})
+    data.append({"id": "not-a-number", "info": {"props": {"media.class": "Audio/Source"}}})
+    data.append({"info": {"props": {"media.class": "Audio/Sink"}}})
+
+    snapshot = parse_pw_dump(data)
+
+    assert [n.id for n in snapshot.sinks] == [48]
+    assert [n.id for n in snapshot.sources] == [54]
 
 
 def _fake_runner(stdout):
@@ -157,3 +170,42 @@ def test_monitor_survives_transient_dump_errors():
         assert len(events[0].sinks) == 1
     finally:
         handle.stop()
+
+
+def test_monitor_survives_callback_exceptions(dump_text, caplog):
+    outputs = [dump_text]
+    first_called = threading.Event()
+    done = threading.Event()
+
+    def runner(cmd, timeout):
+        return outputs[-1]
+
+    registry = PipeWireRegistry(runner=runner)
+
+    def callback(snapshot):
+        if not first_called.is_set():
+            first_called.set()
+            raise RuntimeError("callback boom")
+        done.set()
+
+    handle = registry.monitor(callback, interval=0.05)
+    try:
+        changed = json.loads(dump_text)
+        for obj in changed:
+            props = (obj.get("info") or {}).get("props") or {}
+            if props.get("media.class") == "Audio/Sink":
+                obj["info"]["params"]["Props"][0]["volume"] = 0.5
+        outputs.append(json.dumps(changed))
+        assert first_called.wait(2.0), "first callback never fired"
+        changed_again = json.loads(dump_text)
+        for obj in changed_again:
+            props = (obj.get("info") or {}).get("props") or {}
+            if props.get("media.class") == "Audio/Sink":
+                obj["info"]["params"]["Props"][0]["volume"] = 0.25
+        outputs.append(json.dumps(changed_again))
+        assert done.wait(2.0), "monitor thread died after callback exception"
+    finally:
+        handle.stop()
+    assert any(
+        "monitor callback" in record.getMessage() for record in caplog.records
+    )

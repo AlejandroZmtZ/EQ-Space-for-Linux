@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from .registry import PipeWireRegistry, Runner, default_runner
+from .registry import (
+    PipeWireRegistry,
+    PipeWireUnavailable,
+    PwSnapshot,
+    Runner,
+    default_runner,
+)
 
 COMMAND_TIMEOUT = 5.0
 
@@ -70,20 +76,43 @@ def set_default_sink(
     raise PipeWireControlError(f"no such sink: {name}")
 
 
+def _serial_for(
+    snapshot: "PwSnapshot", node_id: int, role: str
+) -> int:
+    for node in snapshot.all_nodes():
+        if node.id == node_id:
+            if node.serial is not None:
+                return node.serial
+            raise PipeWireControlError(
+                f"{role} node {node_id} has no object.serial in pw-dump"
+            )
+    raise PipeWireControlError(f"no such {role} node: {node_id}")
+
+
 def move_stream(
     stream_id: int,
     sink_id: int,
     runner: Optional[Runner] = None,
     timeout: float = COMMAND_TIMEOUT,
+    registry: Optional[PipeWireRegistry] = None,
 ) -> None:
     """Move a playback stream to a different sink.
 
     Implemented by setting the ``target.object`` session metadata key, which
-    WirePlumber honours by relinking the stream. Best-effort: depends on the
+    WirePlumber honours by relinking the stream. WirePlumber keys metadata by
+    ``object.serial`` rather than node id, so both ids are resolved to their
+    serials against a fresh registry snapshot. Best-effort: depends on the
     session manager's policy and is untestable in CI.
     """
+    registry = registry or PipeWireRegistry(runner=runner)
+    try:
+        snapshot = registry.snapshot()
+    except PipeWireUnavailable as exc:
+        raise PipeWireControlError(str(exc)) from exc
+    stream_serial = _serial_for(snapshot, stream_id, "stream")
+    sink_serial = _serial_for(snapshot, sink_id, "sink")
     _run(
-        ["pw-metadata", str(stream_id), "target.object", str(sink_id)],
+        ["pw-metadata", str(stream_serial), "target.object", str(sink_serial)],
         runner,
         timeout,
     )

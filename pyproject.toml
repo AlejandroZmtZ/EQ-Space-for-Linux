@@ -7,10 +7,16 @@ name = "eqspace"
 version = "0.1.0"
 description = "EQ-Space for Linux — parametric equalizer for PipeWire"
 requires-python = ">=3.10"
-dependencies = ["PySide6"]
+dependencies = ["PySide6", "numpy", "scipy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 eqspace = "eqspace.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+eqspace = ["data/presets/*.json"]

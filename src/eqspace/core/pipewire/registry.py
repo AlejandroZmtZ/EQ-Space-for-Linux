@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 DUMP_TIMEOUT = 5.0
 
@@ -44,6 +47,7 @@ class PwNode:
     media_class: str
     volume: Optional[float]
     mute: Optional[bool]
+    serial: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -78,14 +82,32 @@ def _pw_node(entry: dict[str, Any]) -> PwNode:
             if isinstance(raw_mute, bool):
                 mute = raw_mute
     app_name = props.get("application.name")
+    raw_serial = props.get("object.serial")
+    serial: Optional[int] = None
+    if raw_serial is not None:
+        try:
+            serial = int(raw_serial)
+        except (TypeError, ValueError):
+            serial = None
     return PwNode(
-        id=int(entry.get("id", props.get("object.id", -1))),
+        id=_node_id(entry),
         name=str(props.get("node.name", "")),
         app_name=str(app_name) if app_name is not None else None,
         media_class=str(props.get("media.class", "")),
         volume=volume,
         mute=mute,
+        serial=serial,
     )
+
+
+def _node_id(entry: dict[str, Any]) -> int:
+    info = entry.get("info") or {}
+    props = info.get("props") or {}
+    raw_id = entry.get("id", props.get("object.id"))
+    try:
+        return int(raw_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"malformed pw-dump entry id: {raw_id!r}") from exc
 
 
 def parse_pw_dump(data: Any) -> PwSnapshot:
@@ -99,7 +121,11 @@ def parse_pw_dump(data: Any) -> PwSnapshot:
         if not isinstance(entry, dict):
             continue
         media_class = _props(entry).get("media.class", "")
-        node = _pw_node(entry)
+        try:
+            node = _pw_node(entry)
+        except ValueError:
+            logger.warning("skipping pw-dump entry with malformed id: %r", entry.get("id"))
+            continue
         if media_class == "Audio/Sink":
             sinks.append(node)
         elif media_class == "Audio/Source":
@@ -162,15 +188,17 @@ class PipeWireRegistry:
         interval: float = 0.5,
     ) -> MonitorHandle:
         """Poll every *interval* seconds; call *callback* whenever the
-        snapshot changes. Transient dump errors are logged and skipped so a
-        restarting daemon does not kill the monitor."""
+        snapshot changes. Transient dump errors and exceptions raised by
+        *callback* are logged and skipped so neither a restarting daemon nor
+        a faulty callback kills the monitor thread."""
 
         stop_event = threading.Event()
 
         def _try_snapshot() -> Optional[PwSnapshot]:
             try:
                 return self.snapshot()
-            except PipeWireUnavailable:
+            except PipeWireUnavailable as exc:
+                logger.warning("pw-dump snapshot failed, skipping poll: %s", exc)
                 return None
 
         def loop() -> None:
@@ -182,7 +210,10 @@ class PipeWireRegistry:
                 snapshot = _try_snapshot()
                 if snapshot is not None and snapshot != last:
                     last = snapshot
-                    callback(snapshot)
+                    try:
+                        callback(snapshot)
+                    except Exception:
+                        logger.exception("registry monitor callback raised")
 
         thread = threading.Thread(
             target=loop, name="eqspace-pw-monitor", daemon=True

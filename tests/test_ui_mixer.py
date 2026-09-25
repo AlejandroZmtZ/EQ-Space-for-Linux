@@ -56,6 +56,8 @@ def _make(qapp):
     widget = MixerWidget(
         registry=FakeRegistry(_snapshot()), control=control, poll_interval_ms=0
     )
+    # The initial refresh is deferred via QTimer.singleShot(0, ...).
+    qapp.processEvents()
     return widget, control
 
 

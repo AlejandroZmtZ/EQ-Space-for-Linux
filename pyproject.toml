@@ -7,7 +7,7 @@ name = "eqspace"
 version = "0.1.0"
 description = "EQ-Space for Linux — parametric equalizer for PipeWire"
 requires-python = ">=3.10"
-dependencies = ["PySide6", "numpy", "scipy"]
+dependencies = ["PySide6", "numpy", "scipy", "pyqtgraph"]
 
 [project.optional-dependencies]
 dev = ["pytest"]

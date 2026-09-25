@@ -35,6 +35,7 @@ class ControlLike(Protocol):
     def set_volume(self, node_id: int, volume: float) -> None: ...
     def set_mute(self, node_id: int, mute: bool) -> None: ...
     def set_default_sink(self, name: str) -> None: ...
+    def move_stream(self, stream_id: int, sink_id: int) -> None: ...
 
 
 class StreamRow(QWidget):
@@ -150,7 +151,9 @@ class MixerWidget(QWidget):
         if poll_interval_ms > 0:
             self._timer.start(poll_interval_ms)
 
-        self.refresh()
+        # Defer the first poll so window construction isn't blocked on a
+        # slow real registry; rows populate on the next event loop pass.
+        QTimer.singleShot(0, self.refresh)
 
     def refresh(self) -> None:
         """Poll the registry and rebuild the stream rows."""

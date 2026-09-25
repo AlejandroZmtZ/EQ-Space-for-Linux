@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from eqspace.core.dsp.filter_design import VALID_BAND_TYPES, design_filters
 from eqspace.core.dsp.biquads import magnitude_response
@@ -55,6 +56,20 @@ class TestPresetLibrary:
     def test_load_missing_raises(self):
         with pytest.raises(FileNotFoundError):
             presets.load_preset("does_not_exist")
+
+    @pytest.mark.parametrize("bad_name", ["../secret", "a/b", "a\\b", "..", ""])
+    def test_load_rejects_unsafe_names(self, bad_name):
+        with pytest.raises(ValueError):
+            presets.load_preset(bad_name)
+
+    def test_volume_bounds_enforced(self):
+        preset = presets.load_preset("bass_boost")
+        assert 0.0 <= preset.volume <= 2.0
+        payload = preset.model_dump()
+        for bad_volume in (-0.5, 2.5):
+            payload["volume"] = bad_volume
+            with pytest.raises(ValidationError):
+                presets.Preset.model_validate(payload)
 
 
 class TestHarmanFits:

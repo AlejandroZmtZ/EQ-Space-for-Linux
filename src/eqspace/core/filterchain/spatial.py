@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Tuple
 
+from ..dsp.hrtf import _azimuth_tag
+
 DEFAULT_NODE_NAME = "eqspace.spatial"
 DEFAULT_DESCRIPTION = "EQ-Space Spatial"
 
@@ -45,10 +47,6 @@ def _convolver_node(name: str, filename: Path, inputs: Sequence[str]) -> str:
         f"                    input  = [ {input_list} ]\n"
         "                }"
     )
-
-
-def _azimuth_tag(azimuth: float) -> str:
-    return f"az{azimuth:+g}".replace("-", "m").replace("+", "p").replace(".", "_")
 
 
 class SpatialChainRenderer:
@@ -85,22 +83,13 @@ class SpatialChainRenderer:
             tag = _azimuth_tag(spk.azimuth)
             for ear, ir_path in (("L", spk.left_ir), ("R", spk.right_ir)):
                 node_name = f"conv_{tag}_{ear}"
-                nodes.append(
-                    _convolver_node(
-                        node_name,
-                        ir_path,
-                        (f"{self.node_name}:playback_{c}" for c in channels),
-                    )
-                )
+                inputs = [f"{self.node_name}:playback_{c}" for c in channels]
+                nodes.append(_convolver_node(node_name, ir_path, inputs))
                 mixers.append(f"{self.node_name}.{node_name}:Out")
 
         # Sum all convolver outputs into the stereo out via builtin mixers.
-        left_inputs = " ".join(
-            _spa_quote(m) for i, m in enumerate(mixers) if i % 2 == 0
-        )
-        right_inputs = " ".join(
-            _spa_quote(m) for i, m in enumerate(mixers) if i % 2 == 1
-        )
+        left_inputs = [m for i, m in enumerate(mixers) if i % 2 == 0]
+        right_inputs = [m for i, m in enumerate(mixers) if i % 2 == 1]
         for ear, inputs in (("L", left_inputs), ("R", right_inputs)):
             nodes.append(
                 "                {\n"
@@ -108,7 +97,7 @@ class SpatialChainRenderer:
                 f"                    name  = {_spa_quote(f'mix_{ear}')}\n"
                 "                    label = mixer\n"
                 f"                    control = {{ \"Gain 1\" = {per_speaker_gain!r} }}\n"
-                f"                    input  = [ {inputs} ]\n"
+                f"                    input  = [ {' '.join(_spa_quote(p) for p in inputs)} ]\n"
                 f"                    output = [ {_spa_quote(f'{self.node_name}:capture_{ear}')} ]\n"
                 "                }"
             )
@@ -139,6 +128,74 @@ class SpatialChainRenderer:
             "    }\n"
             "  }\n"
             "]\n"
+        )
+
+    def render_args(
+        self,
+        speakers: Sequence[SpeakerIR],
+        gain: float = 1.0,
+        channels: Sequence[str] = ("FL", "FR"),
+    ) -> str:
+        """Render the module arguments as a single-line SPA properties string.
+
+        Equivalent to :meth:`render_config` but in the single-line form that
+        ``pw-cli load-module`` expects (see
+        :class:`~eqspace.core.filterchain.manager.FilterChainManager`).
+        """
+        if not speakers:
+            raise ValueError("at least one speaker IR pair is required")
+        if gain <= 0.0:
+            raise ValueError("gain must be positive")
+
+        per_speaker_gain = gain / len(speakers)
+        nodes = []
+        mixers = []
+        for spk in speakers:
+            tag = _azimuth_tag(spk.azimuth)
+            for ear, ir_path in (("L", spk.left_ir), ("R", spk.right_ir)):
+                node_name = f"conv_{tag}_{ear}"
+                inputs = " ".join(
+                    _spa_quote(f"{self.node_name}:playback_{c}") for c in channels
+                )
+                nodes.append(
+                    "{ "
+                    "type = builtin "
+                    f"name = {_spa_quote(node_name)} "
+                    "label = convolver "
+                    f"control = {{ \"filename\" = {_spa_quote(str(ir_path))} }} "
+                    f"input = [ {inputs} ] }}"
+                )
+                mixers.append(f"{self.node_name}.{node_name}:Out")
+
+        left_inputs = [m for i, m in enumerate(mixers) if i % 2 == 0]
+        right_inputs = [m for i, m in enumerate(mixers) if i % 2 == 1]
+        for ear, inputs in (("L", left_inputs), ("R", right_inputs)):
+            input_list = " ".join(_spa_quote(p) for p in inputs)
+            nodes.append(
+                "{ "
+                "type = builtin "
+                f"name = {_spa_quote(f'mix_{ear}')} "
+                "label = mixer "
+                f"control = {{ \"Gain 1\" = {per_speaker_gain!r} }} "
+                f"input = [ {input_list} ] "
+                f"output = [ {_spa_quote(f'{self.node_name}:capture_{ear}')} ] }}"
+            )
+
+        positions = " ".join(channels)
+        nodes_str = " ".join(nodes)
+        return (
+            f"node.description = {_spa_quote(self.description)} "
+            f"media.name = {_spa_quote(self.description)} "
+            f"filter.graph = {{ nodes = [ {nodes_str} ] }} "
+            f"audio.position = [ {positions} ] "
+            "capture.props = { "
+            f"node.name = {_spa_quote(self.node_name)} "
+            "node.passive = true "
+            f"audio.position = [ {positions} ] }} "
+            "playback.props = { "
+            f"node.name = {_spa_quote(self.node_name + '.playback')} "
+            'media.class = "Stream/Filter" '
+            f"audio.position = [ {positions} ] }}"
         )
 
 

@@ -3,11 +3,14 @@
 import pytest
 
 from eqspace.core.filterchain.mic import (
+    DEEPFILTERNET_LABEL,
+    LADSPA_NODE_TYPE,
     LADSPA_PLUGIN_FILE,
     LADSPA_SEARCH_PATHS,
     MicChainRenderer,
     deepfilternet_available,
     find_deepfilternet,
+    render_mic_args,
     render_mic_config,
 )
 
@@ -56,9 +59,52 @@ def test_renderer_raises_without_plugin(tmp_path):
 def test_render_contains_ladspa_node(fake_plugin):
     conf = MicChainRenderer(plugin_path=fake_plugin).render_config()
     assert "libpipewire-module-filter-chain" in conf
-    assert "type  = ladspa" in conf
+    assert f"type  = {LADSPA_NODE_TYPE}" in conf
     assert f'plugin = "{fake_plugin}"' in conf
-    assert "label = deep_filter_ladspa" in conf
+    assert f"label = {DEEPFILTERNET_LABEL}" in conf
+
+
+def test_render_args_single_line(fake_plugin):
+    args = MicChainRenderer(plugin_path=fake_plugin).render_args(
+        attenuation_db=-20.0, strength=0.5
+    )
+    assert "\n" not in args
+    assert f"type = {LADSPA_NODE_TYPE}" in args
+    assert f"label = {DEEPFILTERNET_LABEL}" in args
+    assert f'plugin = "{fake_plugin}"' in args
+    assert '"Attenuation Limit (dB)" = -20.0' in args
+    assert '"Strength" = 0.5' in args
+    assert 'media.class = "Audio/Source/Virtual"' in args
+    assert 'node.name = "eqspace.mic"' in args
+
+
+def test_render_args_matches_config_nodes(fake_plugin):
+    renderer = MicChainRenderer(plugin_path=fake_plugin)
+    conf = renderer.render_config()
+    args = renderer.render_args()
+    for key in (
+        '"df_noise_reduction"',
+        str(fake_plugin),
+        DEEPFILTERNET_LABEL,
+        '"Attenuation Limit (dB)" = -15.0',
+        '"Strength" = 1.0',
+    ):
+        assert key in conf
+        assert key in args
+
+
+def test_render_args_validates_params(fake_plugin):
+    renderer = MicChainRenderer(plugin_path=fake_plugin)
+    with pytest.raises(ValueError, match="attenuation"):
+        renderer.render_args(attenuation_db=5.0)
+    with pytest.raises(ValueError, match="strength"):
+        renderer.render_args(strength=1.5)
+
+
+def test_render_mic_args_wrapper(fake_plugin):
+    args = render_mic_args(plugin_path=fake_plugin)
+    assert "\n" not in args
+    assert f"label = {DEEPFILTERNET_LABEL}" in args
 
 
 def test_render_virtual_source(fake_plugin):

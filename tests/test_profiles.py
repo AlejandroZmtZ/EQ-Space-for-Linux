@@ -124,6 +124,12 @@ class TestStorage:
         imported = storage.import_profile(out)
         assert imported == profile
 
+    def test_export_is_atomic_no_temp_left(self, xdg, tmp_path):
+        out = tmp_path / "export.json"
+        storage.export_profile(self._profile("portable"), out)
+        leftovers = [p for p in tmp_path.iterdir() if p.name != "export.json"]
+        assert leftovers == []
+
     def test_saved_file_is_valid_profile_json(self, xdg):
         storage.save_profile(self._profile("raw"))
         raw = json.loads((storage.profiles_dir() / "raw.json").read_text())

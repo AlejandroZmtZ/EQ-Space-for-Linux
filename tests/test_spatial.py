@@ -82,3 +82,43 @@ def test_custom_channels(tmp_path):
         _speakers(tmp_path, azimuths=(0.0,)), channels=("FL", "FR", "LFE")
     )
     assert "audio.position = [ FL FR LFE ]" in conf
+
+
+def test_render_args_single_line(tmp_path):
+    speakers = _speakers(tmp_path)
+    args = SpatialChainRenderer().render_args(speakers, gain=2.0)
+    assert "\n" not in args
+    assert "label = convolver" in args
+    assert "label = mixer" in args
+    for spk in speakers:
+        tag = f"az{spk.azimuth:+g}".replace("-", "m").replace("+", "p").replace(".", "_")
+        assert f'"conv_{tag}_L"' in args
+        assert f'"conv_{tag}_R"' in args
+        assert f'"filename" = "{spk.left_ir}"' in args
+    assert '"Gain 1" = 0.6666666666666666' in args
+    assert 'media.class = "Stream/Filter"' in args
+
+
+def test_render_args_matches_config_nodes(tmp_path):
+    speakers = _speakers(tmp_path)
+    renderer = SpatialChainRenderer()
+    conf = renderer.render_config(speakers)
+    args = renderer.render_args(speakers)
+    for key in (
+        "label = convolver",
+        "label = mixer",
+        "eqspace.spatial:playback_FL",
+        "eqspace.spatial.conv_azm30_L:Out",
+        'node.name = "eqspace.spatial"',
+        'node.name = "eqspace.spatial.playback"',
+    ):
+        assert key in conf
+        assert key in args
+
+
+def test_render_args_rejects_bad_input(tmp_path):
+    renderer = SpatialChainRenderer()
+    with pytest.raises(ValueError, match="at least one"):
+        renderer.render_args([])
+    with pytest.raises(ValueError, match="gain"):
+        renderer.render_args(_speakers(tmp_path), gain=0.0)

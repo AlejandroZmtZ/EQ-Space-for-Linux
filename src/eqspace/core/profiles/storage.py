@@ -61,7 +61,16 @@ def delete_profile(name: str) -> None:
 
 
 def export_profile(profile: EQProfile, path: Path) -> None:
-    Path(path).write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    """Export a profile to an arbitrary path. Atomic via rename."""
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(profile.model_dump_json(indent=2))
+        os.replace(tmp_name, path)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 def import_profile(path: Path) -> EQProfile:

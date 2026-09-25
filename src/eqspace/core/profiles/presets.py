@@ -25,7 +25,7 @@ class Preset(BaseModel):
     bands: list[BandModel] = Field(default_factory=list)
     spatial: dict[str, Any] = Field(default_factory=dict)
     mic: dict[str, Any] = Field(default_factory=dict)
-    volume: float = 1.0
+    volume: float = Field(default=1.0, ge=0.0, le=2.0)
 
     def to_bands(self):
         return [band.to_eqband() for band in self.bands]
@@ -49,6 +49,8 @@ def list_presets() -> list[str]:
 
 
 def load_preset(name: str) -> Preset:
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"invalid preset name {name!r}")
     resource = _preset_dir() / f"{name}.json"
     if not resource.is_file():
         raise FileNotFoundError(f"no built-in preset named {name!r}")

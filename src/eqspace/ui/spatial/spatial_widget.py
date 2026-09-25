@@ -1,26 +1,15 @@
-"""Spatial tab: HRTF virtual-surround stage.
+"""Spatial tab: HRTF virtual-surround stage and binaural crossfeed.
 
-SOFA files are picked up from the user HRTF directory,
-``$XDG_DATA_HOME/eqspace/hrtf`` (default ``~/.local/share/eqspace/hrtf``).
-Drop ``.sofa`` files there — e.g. from https://sofa.acn…  (SOFA conventions
-site / KEMAR, CIEC, Listen measurements) — then select one and hit Apply.
-
-Controls: HRTF profile picker, virtual layout (stereo / 5.1 / 7.1), wet/dry
-slider and a crossfeed toggle. With crossfeed on, the stereo layout collapses
-to a near-field ±30° pair (a bs2b-style crossfeed approximation); with it
-off the full virtual-speaker ring for the chosen layout is rendered.
-
-Graceful states: without ``pysofa`` the tab shows "HRTF unavailable
-(install pysofa)"; with an empty HRTF directory it shows "no SOFA files
-found (download from e.g. sofa.acn…)". The chain is rendered by
-:class:`~eqspace.core.filterchain.spatial.SpatialChainRenderer` and loaded
-through a :class:`~eqspace.ui.module_args_manager.ModuleArgsManager`.
+Organized into two intuitive sections:
+1. Natural Headphone Crossfeed (Bauer / Meier): Removes harsh ear isolation by
+   gently blending acoustic cues between ears.
+2. 3D Virtual Surround (HRTF Convolver): Simulates 5.1 / 7.1 room speaker setups
+   in headphones using Head-Related Transfer Functions (built-in KEMAR or custom SOFA).
 """
 
 from __future__ import annotations
 
 import os
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -28,6 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -36,39 +26,44 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from eqspace.core.dsp.hrtf import HRTFUnavailable, SPEAKER_AZIMUTHS, extract_speaker_irs
-from eqspace.core.filterchain.spatial import SpatialChainRenderer, SpeakerIR
+from eqspace.core.dsp.crossfeed import render_crossfeed_chain_args
+from eqspace.core.pipewire.control import set_system_routing
+from eqspace.core.dsp.hrtf import (
+    HRTFUnavailable,
+    SPEAKER_AZIMUTHS,
+    builtin_kemar_path,
+    extract_speaker_irs,
+    is_builtin_kemar,
+)
+from eqspace.core.filterchain.spatial import (
+    CROSSFEED_AZIMUTHS,
+    LAYOUT_AZIMUTHS,
+    LAYOUT_CHANNEL_SPEAKER_MAP,
+    LAYOUT_CHANNELS,
+    SpatialChainRenderer,
+    SpeakerIR,
+)
 
 DEFAULT_FS = 48000.0
 
-#: Virtual layouts -> node audio positions.
-LAYOUT_CHANNELS = {
-    "Stereo": ("FL", "FR"),
-    "5.1": ("FL", "FR", "FC", "LFE", "SL", "SR"),
-    "7.1": ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"),
-}
-
-#: Virtual layouts -> virtual-speaker azimuths (degrees).
-LAYOUT_AZIMUTHS = {
-    "Stereo": (-110.0, -90.0, -30.0, 30.0, 90.0, 110.0),
-    "5.1": (-110.0, -30.0, 0.0, 30.0, 110.0),
-    "7.1": (-110.0, -90.0, -30.0, 0.0, 30.0, 90.0, 110.0),
-}
-
-#: Crossfeed uses a near-field ±30° pair (bs2b-style approximation).
-CROSSFEED_AZIMUTHS = (-30.0, 30.0)
-
 NO_SOFA_MESSAGE = (
-    "No SOFA files found. Download HRTF sets (e.g. from sofa.acn… "
-    "conventions / KEMAR / Listen) into"
+    "No external SOFA files found. Drop .sofa files into"
 )
-NO_PYSOFA_MESSAGE = "HRTF unavailable — install pysofa to load SOFA files"
+NO_PYSOFA_MESSAGE = "HRTF unavailable — install pysofa to load external SOFA files"
 
 
 def default_hrtf_dir() -> Path:
     """User HRTF directory: ``$XDG_DATA_HOME/eqspace/hrtf``."""
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "eqspace" / "hrtf"
+
+
+def _default_pysofa_available() -> bool:
+    try:
+        import pysofa  # noqa: F401
+        return True
+    except (ImportError, Exception):
+        return False
 
 
 class SpatialWidget(QWidget):
@@ -84,77 +79,151 @@ class SpatialWidget(QWidget):
         self.manager = manager
         self.hrtf_dir = Path(hrtf_dir) if hrtf_dir is not None else default_hrtf_dir()
         self.fs = fs
-        self._pysofa_available = pysofa_available or (lambda: find_spec("pysofa") is not None)
+        self._pysofa_available = pysofa_available or _default_pysofa_available
 
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("HRTF profile (SOFA file):"))
+        # Section 1: Natural Headphone Crossfeed
+        crossfeed_group = QGroupBox("Natural Headphone Crossfeed (Bauer / Meier)")
+        cf_layout = QVBoxLayout(crossfeed_group)
+
+        cf_info = QLabel(
+            "Removes harsh left/right ear isolation on headphones by gently blending "
+            "acoustic cues between ears, recreating a natural stereo speaker soundstage."
+        )
+        cf_info.setWordWrap(True)
+        cf_info.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        cf_layout.addWidget(cf_info)
+
+        cf_controls = QHBoxLayout()
+        self.crossfeed_check = QCheckBox("Enable Crossfeed")
+        cf_controls.addWidget(self.crossfeed_check)
+
+        cf_controls.addSpacing(20)
+        cf_controls.addWidget(QLabel("Mode:"))
+        self.crossfeed_combo = QComboBox()
+        self.crossfeed_combo.addItems(["Bauer", "Meier"])
+        self.crossfeed_combo.setEnabled(False)
+        cf_controls.addWidget(self.crossfeed_combo)
+        cf_controls.addStretch(1)
+        cf_layout.addLayout(cf_controls)
+
+        root_layout.addWidget(crossfeed_group)
+
+        # Section 2: 3D Virtual Surround (HRTF Convolver)
+        surround_group = QGroupBox("3D Virtual Surround (HRTF Convolver)")
+        sr_layout = QVBoxLayout(surround_group)
+
+        sr_info = QLabel(
+            "Simulates full 5.1 / 7.1 room speaker setups in your headphones using "
+            "Head-Related Transfer Functions."
+        )
+        sr_info.setWordWrap(True)
+        sr_info.setStyleSheet("color: #a0a0a0; font-size: 11px;")
+        sr_layout.addWidget(sr_info)
+
+        sofa_row = QHBoxLayout()
+        sofa_row.addWidget(QLabel("HRTF profile (SOFA file):"))
         self.sofa_combo = QComboBox()
-        layout.addWidget(self.sofa_combo)
+        sofa_row.addWidget(self.sofa_combo, 1)
+        sr_layout.addLayout(sofa_row)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Virtual layout:"))
+        layout_row = QHBoxLayout()
+        layout_row.addWidget(QLabel("Virtual layout:"))
         self.layout_combo = QComboBox()
-        self.layout_combo.addItems(list(LAYOUT_CHANNELS))
-        row.addWidget(self.layout_combo)
-        layout.addLayout(row)
+        self.layout_combo.addItems(list(LAYOUT_CHANNEL_SPEAKER_MAP.keys()))
+        layout_row.addWidget(self.layout_combo)
+        layout_row.addStretch(1)
+        sr_layout.addLayout(layout_row)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Wet / dry:"))
+        self.layout_hint_label = QLabel("")
+        self.layout_hint_label.setWordWrap(True)
+        self.layout_hint_label.setStyleSheet("color: #e09030; font-size: 11px;")
+        sr_layout.addWidget(self.layout_hint_label)
+
+        wet_row = QHBoxLayout()
+        wet_row.addWidget(QLabel("Wet / dry:"))
         self.wetdry_slider = QSlider(Qt.Orientation.Horizontal)
         self.wetdry_slider.setRange(0, 100)
         self.wetdry_slider.setValue(100)
-        row.addWidget(self.wetdry_slider)
+        wet_row.addWidget(self.wetdry_slider, 1)
         self.wetdry_label = QLabel("100%")
-        row.addWidget(self.wetdry_label)
-        layout.addLayout(row)
+        wet_row.addWidget(self.wetdry_label)
+        sr_layout.addLayout(wet_row)
         self.wetdry_slider.valueChanged.connect(
             lambda value: self.wetdry_label.setText(f"{value}%")
         )
 
-        self.crossfeed_check = QCheckBox("Crossfeed (near-field stereo)")
-        layout.addWidget(self.crossfeed_check)
+        root_layout.addWidget(surround_group)
 
-        row = QHBoxLayout()
-        self.apply_button = QPushButton("Apply")
+        # Action Buttons & Status
+        btn_row = QHBoxLayout()
+        self.apply_button = QPushButton("Apply Spatial Audio")
         self.apply_button.clicked.connect(self.apply)
         self.unload_button = QPushButton("Unload")
         self.unload_button.clicked.connect(self.unload)
-        row.addWidget(self.apply_button)
-        row.addWidget(self.unload_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        btn_row.addWidget(self.apply_button)
+        btn_row.addWidget(self.unload_button)
+        btn_row.addStretch(1)
+        root_layout.addLayout(btn_row)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        root_layout.addWidget(self.status_label)
 
-        layout.addStretch(1)
+        root_layout.addStretch(1)
+
+        # Wire events
+        self.crossfeed_check.toggled.connect(self._on_crossfeed_toggled)
+        self.crossfeed_combo.currentTextChanged.connect(lambda _: self._update_availability())
+        self.sofa_combo.currentIndexChanged.connect(lambda _: self._update_availability())
+
         self.refresh_sofa_files()
+
+    def _on_crossfeed_toggled(self, checked: bool) -> None:
+        self.crossfeed_combo.setEnabled(checked)
+        self.sofa_combo.setEnabled(not checked)
+        self.layout_combo.setEnabled(not checked)
+        self.wetdry_slider.setEnabled(not checked)
+        if checked:
+            self.layout_hint_label.setText(
+                "Virtual surround layout disabled while crossfeed is active."
+            )
+        else:
+            self.layout_hint_label.setText("")
+        self._update_availability()
 
     # ---- SOFA discovery ---------------------------------------------------
 
     def sofa_files(self) -> list[Path]:
-        """Sorted ``.sofa`` files in the HRTF directory (empty if missing)."""
+        """Sorted ``.sofa`` files in the user HRTF directory."""
         if not self.hrtf_dir.is_dir():
             return []
-        return sorted(self.hrtf_dir.glob("*.sofa"))
+        return sorted(p for p in self.hrtf_dir.glob("*.sofa") if not is_builtin_kemar(p))
 
     def refresh_sofa_files(self) -> None:
         self.sofa_combo.clear()
-        files = self.sofa_files()
-        for path in files:
+        # Always add Default KEMAR as first item so dropdown is never empty
+        self.sofa_combo.addItem("Synthetic KEMAR model (Built-in)", userData=str(builtin_kemar_path()))
+        for path in self.sofa_files():
             self.sofa_combo.addItem(path.name, userData=str(path))
-        self._update_availability(files)
+        self._update_availability()
 
-    def _update_availability(self, files: Sequence[Path]) -> None:
+    def _update_availability(self) -> None:
+        if self.crossfeed_check.isChecked():
+            mode = self.crossfeed_combo.currentText()
+            self.status_label.setText(f"Crossfeed mode ready ({mode})")
+            self.apply_button.setEnabled(True)
+            return
+
+        selected = self.selected_sofa()
+        if selected is None or is_builtin_kemar(selected):
+            self.status_label.setText("")
+            self.apply_button.setEnabled(True)
+            return
+
         if not self._pysofa_available():
             self.status_label.setText(NO_PYSOFA_MESSAGE)
-            self.apply_button.setEnabled(False)
-        elif not files:
-            self.status_label.setText(
-                f"{NO_SOFA_MESSAGE} {self.hrtf_dir}"
-            )
             self.apply_button.setEnabled(False)
         else:
             self.status_label.setText("")
@@ -170,9 +239,7 @@ class SpatialWidget(QWidget):
         return self.layout_combo.currentText()
 
     def azimuths(self) -> Sequence[float]:
-        if self.crossfeed_check.isChecked() and self.selected_layout() == "Stereo":
-            return CROSSFEED_AZIMUTHS
-        return LAYOUT_AZIMUTHS[self.selected_layout()]
+        return LAYOUT_AZIMUTHS.get(self.selected_layout(), (-30.0, 30.0))
 
     def wet_gain(self) -> float:
         """Map the wet/dry slider to a positive chain gain."""
@@ -181,22 +248,52 @@ class SpatialWidget(QWidget):
 
     def render_chain_args(self, sofa_path: Path) -> str:
         """Extract IRs and render the single-line module args."""
-        azimuths = self.azimuths()
-        ir_paths = extract_speaker_irs(sofa_path, self.fs, azimuths_deg=azimuths)
+        layout = self.selected_layout()
+        channel_map = LAYOUT_CHANNEL_SPEAKER_MAP.get(
+            layout, LAYOUT_CHANNEL_SPEAKER_MAP["Stereo"]
+        )
+        needed_azimuths = sorted(set(az for _, az in channel_map))
+        ir_paths = extract_speaker_irs(sofa_path, self.fs, azimuths_deg=needed_azimuths)
         speakers = [
-            SpeakerIR(azimuth=az, left_ir=paths[0], right_ir=paths[1])
-            for az, paths in sorted(ir_paths.items())
+            SpeakerIR(
+                azimuth=az,
+                left_ir=ir_paths[az][0],
+                right_ir=ir_paths[az][1],
+                channel=ch,
+            )
+            for ch, az in channel_map
         ]
+        channels = LAYOUT_CHANNELS.get(layout, ("FL", "FR"))
         return SpatialChainRenderer().render_args(
             speakers,
             gain=self.wet_gain(),
-            channels=LAYOUT_CHANNELS[self.selected_layout()],
+            channels=channels,
         )
 
     def apply(self) -> None:
-        sofa = self.selected_sofa()
-        if sofa is None or self.manager is None:
+        if self.manager is None:
             return
+
+        if self.crossfeed_check.isChecked():
+            mode = self.crossfeed_combo.currentText()
+            try:
+                args = render_crossfeed_chain_args(preset=mode.lower(), fs=self.fs)
+                if self.manager.is_loaded:
+                    self.manager.update_args(args)
+                else:
+                    self.manager.load_args(args)
+            except Exception as exc:
+                self.status_label.setText(f"Apply failed: {exc}")
+                return
+            try:
+                set_system_routing(enable=True, filter_node_name="eqspace.crossfeed")
+            except Exception:
+                pass
+            self.status_label.setText(f"Crossfeed chain loaded ({mode})")
+            return
+
+        sofa = self.selected_sofa() or builtin_kemar_path()
+        layout = self.selected_layout()
         try:
             args = self.render_chain_args(sofa)
             if self.manager.is_loaded:
@@ -209,16 +306,75 @@ class SpatialWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Apply failed: {exc}")
             return
+
+        try:
+            set_system_routing(enable=True, filter_node_name="eqspace.spatial")
+        except Exception:
+            pass
+
+        profile_display = "Default KEMAR" if is_builtin_kemar(sofa) else sofa.name
         self.status_label.setText(
-            f"Spatial chain loaded: {sofa.name} ({self.selected_layout()})"
+            f"Spatial chain loaded: {profile_display} ({layout})"
         )
 
     def unload(self) -> None:
         if self.manager is None:
             return
         try:
+            from eqspace.core.pipewire.registry import PipeWireRegistry
+            reg = PipeWireRegistry()
+            peq_loaded = any(s.name == "eqspace.filter-chain" for s in reg.snapshot().sinks)
+            if peq_loaded:
+                set_system_routing(enable=True, filter_node_name="eqspace.filter-chain")
+            else:
+                set_system_routing(enable=False)
+        except Exception:
+            pass
+        try:
             self.manager.unload()
         except Exception as exc:
             self.status_label.setText(f"Unload failed: {exc}")
             return
         self.status_label.setText("Spatial chain unloaded")
+
+    # ---- state export / import ----------------------------------------------
+
+    def get_state(self) -> dict[str, object]:
+        sofa = self.selected_sofa()
+        return {
+            "sofa_path": str(sofa) if sofa else None,
+            "layout": self.selected_layout(),
+            "wet": self.wetdry_slider.value(),
+            "crossfeed": self.crossfeed_check.isChecked(),
+            "crossfeed_mode": self.crossfeed_combo.currentText(),
+        }
+
+    def set_state(self, state: dict[str, object]) -> None:
+        if "layout" in state:
+            idx = self.layout_combo.findText(str(state["layout"]))
+            if idx >= 0:
+                self.layout_combo.setCurrentIndex(idx)
+        if "wet" in state:
+            self.wetdry_slider.setValue(int(state["wet"]))
+        if "crossfeed_mode" in state:
+            idx = self.crossfeed_combo.findText(str(state["crossfeed_mode"]), Qt.MatchFlag.MatchFixedString)
+            if idx >= 0:
+                self.crossfeed_combo.setCurrentIndex(idx)
+        elif "algorithm" in state:
+            idx = self.crossfeed_combo.findText(str(state["algorithm"]).capitalize(), Qt.MatchFlag.MatchFixedString)
+            if idx >= 0:
+                self.crossfeed_combo.setCurrentIndex(idx)
+        if "crossfeed" in state:
+            self.crossfeed_check.setChecked(bool(state["crossfeed"]))
+        elif state.get("type") == "crossfeed":
+            self.crossfeed_check.setChecked(True)
+        if "sofa_path" in state and state["sofa_path"] is not None:
+            path_str = str(state["sofa_path"])
+            idx = self.sofa_combo.findData(path_str)
+            if idx >= 0:
+                self.sofa_combo.setCurrentIndex(idx)
+            else:
+                p = Path(path_str)
+                if p.is_file():
+                    self.sofa_combo.addItem(p.name, userData=path_str)
+                    self.sofa_combo.setCurrentIndex(self.sofa_combo.count() - 1)

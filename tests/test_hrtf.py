@@ -2,15 +2,19 @@
 
 import numpy as np
 import pytest
+import scipy.io.wavfile as wav_io
 
 from eqspace.core.dsp.hrtf import (
     ExtractedIRs,
     HRTFUnavailable,
     PySofaExtractor,
     SPEAKER_AZIMUTHS,
+    SyntheticKemarExtractor,
     _nearest_azimuth,
+    builtin_kemar_path,
     default_cache_dir,
     extract_speaker_irs,
+    is_builtin_kemar,
     resample_ir,
 )
 
@@ -57,11 +61,12 @@ def test_extract_writes_npy_pairs(sofa_file, tmp_path):
         sofa_file, 48000.0, cache_dir=tmp_path / "cache", extractor=extractor
     )
     assert set(paths) == set(SPEAKER_AZIMUTHS)
+
     for az, (left, right) in paths.items():
         assert left.exists() and right.exists()
-        assert left.suffix == ".npy" and right.suffix == ".npy"
-        l = np.load(left)
-        r = np.load(right)
+        assert left.suffix == ".wav" and right.suffix == ".wav"
+        _, l = wav_io.read(str(left))
+        _, r = wav_io.read(str(right))
         assert l[0] == pytest.approx(1.0)
         assert r[0] == pytest.approx(az / 110.0)
     assert extractor.calls == 1
@@ -136,3 +141,49 @@ def test_nearest_azimuth_no_match():
     positions = np.array([[10.0, 0.0, 1.0]])
     with pytest.raises(ValueError, match="no SOFA measurement"):
         _nearest_azimuth(positions, 90.0)
+
+
+def test_builtin_kemar_path_and_is_builtin():
+    path = builtin_kemar_path()
+    assert path.is_file()
+    assert is_builtin_kemar(path)
+    assert is_builtin_kemar("kemar_default.sofa")
+    assert not is_builtin_kemar("other.sofa")
+
+
+def test_synthetic_kemar_extractor():
+    extractor = SyntheticKemarExtractor(fs=48000.0)
+    res = extractor.extract(builtin_kemar_path(), SPEAKER_AZIMUTHS)
+    assert res.sample_rate == 48000.0
+    assert set(res.irs.keys()) == set(SPEAKER_AZIMUTHS)
+
+    # 0 deg should be symmetric
+    l0, r0 = res.irs[0.0]
+    assert np.allclose(l0, r0)
+
+    # -30 deg: left ear should be ipsilateral and stronger
+    lm30, rm30 = res.irs[-30.0]
+    assert np.max(lm30) > np.max(rm30)
+
+    # +30 deg: right ear should be ipsilateral and stronger
+    lp30, rp30 = res.irs[30.0]
+    assert np.max(rp30) > np.max(lp30)
+
+    # -90 deg: right ear is delayed relative to left ear
+    lm90, rm90 = res.irs[-90.0]
+    peak_l = np.argmax(np.abs(lm90))
+    peak_r = np.argmax(np.abs(rm90))
+    assert peak_r > peak_l
+    assert (peak_r - peak_l) >= 28  # ~31.5 samples theoretical delay at 48kHz
+
+
+def test_extract_speaker_irs_builtin_kemar(tmp_path):
+    # Without passing any extractor, extract_speaker_irs should use SyntheticKemarExtractor
+    paths = extract_speaker_irs(builtin_kemar_path(), 48000.0, cache_dir=tmp_path / "cache")
+    assert set(paths.keys()) == set(SPEAKER_AZIMUTHS)
+    for az, (left, right) in paths.items():
+        assert left.exists() and right.exists()
+        assert left.suffix == ".wav" and right.suffix == ".wav"
+        _, l_arr = wav_io.read(str(left))
+        _, r_arr = wav_io.read(str(right))
+        assert len(l_arr) > 0 and len(r_arr) > 0

@@ -87,6 +87,115 @@ class PySofaExtractor:
                 close()
 
 
+def builtin_kemar_path() -> Path:
+    """Return path to the bundled built-in KEMAR default HRTF profile."""
+    return Path(__file__).resolve().parent.parent.parent / "data" / "hrtf" / "kemar_default.sofa"
+
+
+def is_builtin_kemar(path: Path | str) -> bool:
+    """Return True if path represents the built-in KEMAR default profile."""
+    p = Path(path)
+    try:
+        return p.name == "kemar_default.sofa" or p.resolve() == builtin_kemar_path().resolve()
+    except Exception:
+        return p.name == "kemar_default.sofa"
+
+
+def generate_woodworth_kemar_irs(
+    azimuths_deg: Sequence[float],
+    fs: float = 48000.0,
+    n_samples: int = 256,
+    head_radius: float = 0.0875,
+    speed_of_sound: float = 343.0,
+) -> Dict[float, Tuple[np.ndarray, np.ndarray]]:
+    """Synthesize stereo impulse response pairs via Woodworth spherical head model.
+
+    Implements Woodworth's analytical ITD equation coupled with spherical head
+    shadowing / diffraction low-pass and high-shelf compensation.
+    """
+    a = head_radius
+    c = speed_of_sound
+    w0 = 2.0 * c / a  # ~7840 rad/s
+    t0 = 10.0  # pre-delay samples to preserve causality
+
+    irs: Dict[float, Tuple[np.ndarray, np.ndarray]] = {}
+    for az in azimuths_deg:
+        az_flt = float(az)
+        theta = np.deg2rad(abs(az_flt))
+        if theta <= np.pi / 2.0:
+            itd = (a / c) * (np.sin(theta) + theta)
+        else:
+            itd = (a / c) * (np.sin(np.pi - theta) + theta)
+
+        delay_samples = itd * fs
+        alpha_ipsi = 1.0 + 0.3 * np.sin(theta)
+        alpha_contra = 1.0 / (1.0 + 2.5 * np.sin(theta))
+
+        def _make_ir(alpha: float, delay: float) -> np.ndarray:
+            a0 = 2.0 * fs + w0
+            b0 = (2.0 * fs + alpha * w0) / a0
+            b1 = (alpha * w0 - 2.0 * fs) / a0
+            a1 = (w0 - 2.0 * fs) / a0
+
+            resp = np.zeros(n_samples, dtype=np.float64)
+            resp[0] = b0
+            if n_samples > 1:
+                resp[1] = b1 - a1 * resp[0]
+            for n in range(2, n_samples):
+                resp[n] = -a1 * resp[n - 1]
+
+            d_int = int(np.floor(delay))
+            d_frac = delay - d_int
+            delayed = np.zeros(n_samples, dtype=np.float64)
+            if d_int < n_samples - 1:
+                delayed[d_int:] = (1.0 - d_frac) * resp[: n_samples - d_int]
+                if d_int + 1 < n_samples:
+                    delayed[d_int + 1 :] += d_frac * resp[: n_samples - d_int - 1]
+            return delayed
+
+        if az_flt < 0.0:  # Left source -> Left ear ipsi, Right ear contra
+            left = _make_ir(alpha_ipsi, t0)
+            right = _make_ir(alpha_contra, t0 + delay_samples)
+        elif az_flt > 0.0:  # Right source -> Right ear ipsi, Left ear contra
+            left = _make_ir(alpha_contra, t0 + delay_samples)
+            right = _make_ir(alpha_ipsi, t0)
+        else:  # Center (0.0) -> Symmetric
+            left = _make_ir(1.0, t0)
+            right = _make_ir(1.0, t0)
+
+        peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+        if peak > 0.0:
+            left /= peak
+            right /= peak
+
+        irs[az_flt] = (left, right)
+    return irs
+
+
+class SyntheticKemarExtractor:
+    """Built-in IRExtractor using analytical Woodworth spherical head model."""
+
+    def __init__(
+        self,
+        fs: float = 48000.0,
+        head_radius: float = 0.0875,
+        speed_of_sound: float = 343.0,
+    ) -> None:
+        self.fs = fs
+        self.head_radius = head_radius
+        self.speed_of_sound = speed_of_sound
+
+    def extract(self, path: Path, azimuths_deg: Sequence[float]) -> ExtractedIRs:
+        irs = generate_woodworth_kemar_irs(
+            azimuths_deg,
+            fs=self.fs,
+            head_radius=self.head_radius,
+            speed_of_sound=self.speed_of_sound,
+        )
+        return ExtractedIRs(sample_rate=self.fs, irs=irs)
+
+
+
 def _nearest_azimuth(positions: np.ndarray, target_deg: float) -> int:
     azimuths = np.asarray(positions, dtype=np.float64)[:, 0]
     diff = np.abs(((azimuths - target_deg + 180.0) % 360.0) - 180.0)
@@ -150,12 +259,14 @@ def extract_speaker_irs(
     key = _cache_key(sofa_path, sample_rate, azimuths_deg)
     entry_dir = cache_dir / key
 
+    import scipy.io.wavfile as wav_io
+
     paths: Dict[float, Tuple[Path, Path]] = {}
     missing = False
     for az in azimuths_deg:
         tag = _azimuth_tag(float(az))
-        left = entry_dir / f"{tag}_L.npy"
-        right = entry_dir / f"{tag}_R.npy"
+        left = entry_dir / f"{tag}_L.wav"
+        right = entry_dir / f"{tag}_R.wav"
         paths[float(az)] = (left, right)
         if not (left.exists() and right.exists()):
             missing = True
@@ -163,11 +274,19 @@ def extract_speaker_irs(
     if not missing:
         return paths
 
-    extractor = extractor or PySofaExtractor()
+    if extractor is None:
+        if is_builtin_kemar(sofa_path):
+            extractor = SyntheticKemarExtractor(fs=sample_rate)
+        else:
+            extractor = PySofaExtractor()
     extracted = extractor.extract(sofa_path, azimuths_deg)
     entry_dir.mkdir(parents=True, exist_ok=True)
     for az, (left_path, right_path) in paths.items():
         left_ir, right_ir = extracted.irs[az]
-        np.save(left_path, resample_ir(left_ir, extracted.sample_rate, sample_rate))
-        np.save(right_path, resample_ir(right_ir, extracted.sample_rate, sample_rate))
+        l_res = resample_ir(left_ir, extracted.sample_rate, sample_rate).astype(np.float32)
+        r_res = resample_ir(right_ir, extracted.sample_rate, sample_rate).astype(np.float32)
+        wav_io.write(str(left_path), int(sample_rate), l_res)
+        wav_io.write(str(right_path), int(sample_rate), r_res)
+        np.save(left_path.with_suffix(".npy"), l_res)
+        np.save(right_path.with_suffix(".npy"), r_res)
     return paths

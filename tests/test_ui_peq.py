@@ -64,7 +64,7 @@ def test_enable_toggle_updates_model(qapp):
     check = widget.table.cellWidget(0, 4)
     check.setChecked(False)
     assert widget.bands[0].enabled is False
-    assert widget._filter_specs() == []
+    assert [spec.name for spec in widget._filter_specs()] == ["preamp"]
 
 
 def test_table_edits_update_model(qapp):
@@ -101,7 +101,8 @@ def test_apply_loads_filter_chain(qapp):
     widget = _make(qapp, manager)
     widget.apply()
     assert len(manager.loaded) == 1
-    spec = manager.loaded[0][0]
+    assert manager.loaded[0][0].filter_type == "linear"
+    spec = manager.loaded[0][1]
     assert spec.name == "band_0"
     assert spec.filter_type == "bq_peaking"
     assert spec.params["Freq"] == 1000.0
@@ -113,7 +114,7 @@ def test_apply_when_loaded_uses_live_params(qapp):
     widget = _make(qapp, manager)
     widget.apply()
     keys = [p[1] for p in manager.params]
-    assert keys == ["band_0:Freq", "band_0:Gain", "band_0:Q"]
+    assert keys == ["preamp:Mult", "preamp:Add", "band_0:Freq", "band_0:Gain", "band_0:Q"]
     assert all(p[0] == "eqspace.filter-chain" for p in manager.params)
 
 
@@ -124,3 +125,23 @@ def test_save_profile_emits_signal(qapp):
     widget.save_button.click()
     assert len(received) == 1
     assert received[0] == widget.bands
+
+
+class FakeManagerWithReload(FakeManager):
+    def __init__(self):
+        super().__init__()
+        self.reloaded = []
+
+    def reload(self, specs):
+        self.reloaded.append(list(specs))
+        return 43
+
+
+def test_apply_when_loaded_uses_reload_if_available(qapp):
+    manager = FakeManagerWithReload()
+    manager.is_loaded = True
+    widget = _make(qapp, manager)
+    widget.apply()
+    assert len(manager.reloaded) == 1
+    assert len(manager.params) == 0
+    assert widget.status_label.text() == "Applied ✓"

@@ -63,4 +63,85 @@ QLabel#sectionHeader {
     font-weight: bold;
     color: #ffffff;
 }
+QLabel#tabSubtitle {
+    font-size: 12px;
+    color: #94a3b8;
+    padding: 0 0 4px 0;
+}
+QFrame#quickStartBanner {
+    background-color: #1c2333;
+    border: 1px solid #3b82f6;
+    border-radius: 8px;
+    padding: 10px 14px;
+}
+QLabel#quickStartHeader {
+    font-size: 14px;
+    font-weight: bold;
+    color: #93c5fd;
+}
+QPushButton#quickStartDismissButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    color: #94a3b8;
+    font-size: 13px;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+QPushButton#quickStartDismissButton:hover {
+    background-color: #2e3a50;
+    border-color: #475569;
+    color: #ffffff;
+}
+QFrame#quickStartStepCard {
+    background-color: #141a27;
+    border: 1px solid #233047;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+QLabel#quickStartStepTitle {
+    font-size: 12px;
+    font-weight: bold;
+    color: #60a5fa;
+}
+QLabel#quickStartStepDesc {
+    font-size: 11px;
+    color: #cbd5e1;
+}
+QFrame#routingCard {
+    background-color: #232834;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    padding: 6px;
+}
+QLabel#statusBadgeActive {
+    background-color: #064e3b;
+    color: #10b981;
+    border: 1px solid #10b981;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: bold;
+}
+QLabel#statusBadgeInactive {
+    background-color: #1f2937;
+    color: #9ca3af;
+    border: 1px solid #6b7280;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+}
+QPushButton#statusBarHelpButton {
+    background-color: #26272d;
+    border: 1px solid #3a3d46;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: #93c5fd;
+}
+QPushButton#statusBarHelpButton:hover {
+    background-color: #33353c;
+    border-color: #3b82f6;
+    color: #ffffff;
+}
 """

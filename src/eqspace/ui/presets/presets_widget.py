@@ -1,10 +1,8 @@
-"""Presets tab: built-in preset library, preview, save-as-profile, import/export.
+"""Presets tab: built-in EQ presets, apply, save, import and export.
 
 The preset source is dependency-injected (``list_presets`` / ``load_preset``)
-so tests can substitute a fake library. Previewing a preset emits
-:attr:`PresetsWidget.preset_previewed` with the resulting
-:class:`EQProfile`; the main window wires that to the PEQ tab (update the
-band model and push the chain to the filter-chain manager).
+so tests can substitute a fake library. Applying emits an EQProfile; the
+window reports completion with :meth:`set_apply_result`.
 """
 
 from __future__ import annotations
@@ -31,8 +29,7 @@ from eqspace.core.profiles.presets import list_presets, load_preset
 class PresetsWidget(QWidget):
     """List built-in presets and act on the selection."""
 
-    #: Emitted with an :class:`EQProfile` when Preview is clicked.
-    preset_previewed = Signal(object)
+    preset_apply_requested = Signal(object)
 
     def __init__(
         self,
@@ -43,6 +40,9 @@ class PresetsWidget(QWidget):
         super().__init__(parent)
         self._list_presets = list_presets_fn
         self._load_preset = load_preset_fn
+        self._applying_name: Optional[str] = None
+        self._active_name: Optional[str] = None
+        self._eq_enabled = False
 
         layout = QVBoxLayout(self)
 
@@ -60,8 +60,8 @@ class PresetsWidget(QWidget):
         layout.addWidget(self.research_label)
 
         buttons = QHBoxLayout()
-        self.preview_button = QPushButton("Preview")
-        self.preview_button.clicked.connect(self._on_preview)
+        self.apply_button = QPushButton("Apply")
+        self.apply_button.clicked.connect(self._on_apply)
         self.save_button = QPushButton("Save as profile")
         self.save_button.clicked.connect(self._on_save_as_profile)
         self.import_button = QPushButton("Import profile…")
@@ -69,7 +69,7 @@ class PresetsWidget(QWidget):
         self.export_button = QPushButton("Export profile…")
         self.export_button.clicked.connect(self._on_export)
         for button in (
-            self.preview_button,
+            self.apply_button,
             self.save_button,
             self.import_button,
             self.export_button,
@@ -97,10 +97,11 @@ class PresetsWidget(QWidget):
 
     def _on_selection_changed(self, row: int) -> None:
         name = self.selected_preset_name()
+        self.apply_button.setText("Active ✓" if name == self._active_name and self._eq_enabled else "Apply")
         if name is None:
             self.description_label.setText("")
             self.research_label.setText("")
-            self.preview_button.setEnabled(False)
+            self.apply_button.setEnabled(False)
             self.save_button.setEnabled(False)
             return
         try:
@@ -108,15 +109,19 @@ class PresetsWidget(QWidget):
         except Exception:
             self.description_label.setText("")
             self.research_label.setText("")
+            self.apply_button.setEnabled(False)
+            self.save_button.setEnabled(False)
             return
         self.description_label.setText(getattr(preset, "description", ""))
         self.research_label.setText(getattr(preset, "research_basis", ""))
-        self.preview_button.setEnabled(True)
+        self.apply_button.setEnabled(self._applying_name is None)
         self.save_button.setEnabled(True)
 
     # ---- actions ----------------------------------------------------------
 
-    def _on_preview(self) -> None:
+    def _on_apply(self) -> None:
+        if self._applying_name is not None:
+            return
         name = self.selected_preset_name()
         if name is None:
             return
@@ -126,8 +131,41 @@ class PresetsWidget(QWidget):
             self.status_label.setText(f"Could not load preset: {exc}")
             return
         profile = preset.to_profile() if hasattr(preset, "to_profile") else preset
-        self.preset_previewed.emit(profile)
-        self.status_label.setText(f"Previewing preset “{name}”")
+        self._applying_name = name
+        self.preset_list.setEnabled(False)
+        self.apply_button.setText("Applying…")
+        self.apply_button.setEnabled(False)
+        self.status_label.setText(f"Applying preset “{name}”…")
+        self.preset_apply_requested.emit(profile)
+
+    def set_apply_result(self, success: bool, message: str) -> None:
+        name = self._applying_name
+        if name is None:
+            return
+        self._applying_name = None
+        self.preset_list.setEnabled(True)
+        if success:
+            self._active_name = name
+            self._eq_enabled = True
+            self.status_label.setText(f"Preset “{name}” active")
+        else:
+            self.status_label.setText(f"Apply failed: {message}")
+        self._on_selection_changed(self.preset_list.currentRow())
+
+    def set_eq_enabled(self, enabled: bool) -> None:
+        self._eq_enabled = enabled
+        if self._active_name and self._applying_name is None:
+            self.status_label.setText(
+                f"Preset “{self._active_name}” active"
+                if enabled else f"EQ off · Preset “{self._active_name}” loaded"
+            )
+            self._on_selection_changed(self.preset_list.currentRow())
+
+    def clear_active(self) -> None:
+        self._active_name = None
+        self._eq_enabled = False
+        self.status_label.setText("")
+        self._on_selection_changed(self.preset_list.currentRow())
 
     def _on_save_as_profile(self) -> None:
         from PySide6.QtWidgets import QInputDialog

@@ -1,4 +1,4 @@
-"""Last-active-profile state, stored next to the profiles in the config dir.
+"""Last-saved-profile state, stored next to profiles in the config dir.
 
 Follows ``core/profiles/storage.py`` conventions: the state file lives at
 ``$XDG_CONFIG_HOME/eqspace/state.json`` (default ``~/.config/eqspace``).
@@ -21,7 +21,7 @@ def state_path() -> Path:
 
 
 def load_last_profile(path: Optional[Path] = None) -> Optional[str]:
-    """Return the last active profile name, or None if absent/corrupt."""
+    """Return the last saved profile name, or None if absent/corrupt."""
     path = path or state_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -32,7 +32,7 @@ def load_last_profile(path: Optional[Path] = None) -> Optional[str]:
 
 
 def save_last_profile(name: Optional[str], path: Optional[Path] = None) -> Path:
-    """Persist the last active profile name (None clears it). Atomic rename."""
+    """Persist the last saved profile name (None clears it). Atomic rename."""
     path = path or state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")

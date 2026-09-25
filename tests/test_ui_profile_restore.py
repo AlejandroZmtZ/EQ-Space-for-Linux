@@ -45,7 +45,12 @@ def _profile(name, freq=500.0, gain=3.0):
     )
 
 
-def test_startup_restores_last_profile(qapp, tmp_path, monkeypatch):
+def test_startup_loads_last_profile_without_routing(qapp, tmp_path, monkeypatch):
+    routing_calls = []
+    monkeypatch.setattr(
+        "eqspace.ui.main_window._control.set_system_routing",
+        lambda *a, **k: routing_calls.append((a, k)),
+    )
     from eqspace.core.profiles import storage
     from eqspace.ui.main_window import MainWindow
     from eqspace.ui.profile_state import save_last_profile
@@ -58,12 +63,11 @@ def test_startup_restores_last_profile(qapp, tmp_path, monkeypatch):
     window = MainWindow(
         registry=FakeRegistry(), filter_manager=manager, poll_interval_ms=0
     )
-    assert len(manager.loaded) == 1
+    assert manager.loaded == []
+    assert routing_calls == []
     assert window.peq.bands[0].freq_hz == 250.0
     assert window.peq.bands[0].gain_db == 4.0
-    # The loaded FilterSpec carries the restored band params.
-    spec = manager.loaded[0][0]
-    assert spec.params["Freq"] == 250.0
+    assert "click Apply" in window.peq.status_label.text()
     from eqspace.core.dsp.filter_design import EQBand
 
     assert isinstance(window.peq.bands[0], EQBand)
@@ -117,3 +121,59 @@ def test_save_as_profile_from_peq(qapp, tmp_path, monkeypatch):
     assert profile.name == "my-preset"
     assert len(profile.bands) == 1
     assert load_last_profile() == "my-preset"
+
+
+def test_save_captures_spatial_and_mic(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+    from eqspace.core.profiles import storage
+    from eqspace.ui.main_window import MainWindow
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    window = MainWindow(
+        registry=FakeRegistry(),
+        filter_manager=FakeFilterManager(),
+        poll_interval_ms=0,
+        restore_profile=False,
+    )
+    window.spatial.set_state({"layout": "7.1", "wet": 40, "crossfeed": True})
+    window.mic.set_state({"enabled": True, "strength": 80})
+
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("full-setup", True))
+    )
+    window.peq.save_profile_requested.emit(list(window.peq.bands))
+
+    profile = storage.load_profile("full-setup")
+    assert profile.spatial.get("layout") == "7.1"
+    assert profile.spatial.get("wet") == 40
+    assert profile.spatial.get("crossfeed") is True
+    assert profile.mic.get("enabled") is True
+    assert profile.mic.get("strength") == 80
+
+
+def test_apply_profile_restores_spatial_and_mic(qapp, tmp_path, monkeypatch):
+    from eqspace.core.profiles.models import BandModel, EQProfile
+    from eqspace.ui.main_window import MainWindow
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("eqspace.ui.main_window._control.set_system_routing", lambda *a, **k: True)
+    monkeypatch.setattr("eqspace.ui.main_window._control.is_system_routed", lambda **k: True)
+    window = MainWindow(
+        registry=FakeRegistry(),
+        filter_manager=FakeFilterManager(),
+        poll_interval_ms=0,
+        restore_profile=False,
+    )
+    profile = EQProfile(
+        name="restored",
+        bands=[BandModel(band_type="peaking", freq_hz=1000.0, gain_db=0.0, q=1.0)],
+        spatial={"layout": "5.1", "wet": 50, "crossfeed": True},
+        mic={"enabled": True, "strength": 75},
+    )
+    window.apply_profile(profile)
+
+    assert window.spatial.layout_combo.currentText() == "5.1"
+    assert window.spatial.wetdry_slider.value() == 50
+    assert window.spatial.crossfeed_check.isChecked() is True
+    assert window.mic.nr_check.isChecked() is True
+    assert window.mic.strength_slider.value() == 75

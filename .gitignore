@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 .superpowers/
 *.egg-info/
+build/
+dist/
+.agents/
+AGENTS.md
+GEMINI.md
+docs/superpowers/plans/full-prototype-and-publishing-plan.md

@@ -1,6 +1,7 @@
 """EQ band model and filter design / target fitting on top of RBJ biquads."""
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -34,18 +35,24 @@ class EQBand:
     def __post_init__(self) -> None:
         if self.band_type not in VALID_BAND_TYPES:
             raise ValueError(f"unknown band_type {self.band_type!r}; expected one of {VALID_BAND_TYPES}")
-        if self.freq_hz <= 0.0:
+        if not math.isfinite(self.freq_hz) or self.freq_hz <= 0.0:
             raise ValueError(f"freq_hz must be positive, got {self.freq_hz}")
-        if self.q <= 0.0:
+        if not math.isfinite(self.q) or self.q <= 0.0:
             raise ValueError(f"q must be positive, got {self.q}")
+        if not math.isfinite(self.gain_db):
+            raise ValueError("gain_db must be finite")
 
 
 def design_filters(bands: list[EQBand], fs: float) -> list[BiquadCoeffs]:
     """Design biquad coefficients for every enabled band, in order."""
+    if not math.isfinite(fs) or fs <= 0:
+        raise ValueError("PipeWire graph sample rate is unavailable")
     coeffs: list[BiquadCoeffs] = []
     for band in bands:
         if not band.enabled:
             continue
+        if not all(math.isfinite(v) for v in (band.freq_hz, band.gain_db, band.q)) or band.freq_hz >= fs / 2:
+            raise ValueError(f"{band.freq_hz:g} Hz is invalid at {fs:g} Hz graph rate; lower this band below {fs / 2:g} Hz")
         if band.band_type == "peaking":
             coeffs.append(peaking(band.freq_hz, band.gain_db, band.q, fs))
         elif band.band_type == "low_shelf":

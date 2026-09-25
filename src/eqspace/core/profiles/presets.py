@@ -45,7 +45,11 @@ def _preset_dir():
 
 
 def list_presets() -> list[str]:
-    return sorted(p.name[: -len(".json")] for p in _preset_dir().iterdir() if p.name.endswith(".json"))
+    return sorted(
+        p.name[: -len(".json")]
+        for p in _preset_dir().iterdir()
+        if p.name.endswith(".json") and p.name != "crossfeed_bauer.json"
+    )
 
 
 def load_preset(name: str) -> Preset:

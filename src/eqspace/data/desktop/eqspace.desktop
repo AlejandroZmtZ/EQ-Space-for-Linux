@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=EQ-Space
+GenericName=Audio Equalizer
+Comment=System-wide parametric equalizer and spatial audio for PipeWire
+Exec=eqspace
+Icon=eqspace
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Mixer;
+StartupNotify=true

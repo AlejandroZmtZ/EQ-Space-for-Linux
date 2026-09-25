@@ -5,12 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eqspace"
 version = "0.1.0"
-description = "EQ-Space for Linux — parametric equalizer for PipeWire"
-requires-python = ">=3.10"
-dependencies = ["PySide6", "numpy", "scipy", "pyqtgraph"]
+description = "EQ-Space for Linux — system-wide audio enhancement suite for PipeWire"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6",
+    "numpy",
+    "scipy",
+    "pyqtgraph",
+    "pydantic",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+    "Topic :: Multimedia :: Sound/Audio :: Mixers",
+]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/AlejandroZmtZ/EQ-Space-for-Linux"
+Issues = "https://github.com/AlejandroZmtZ/EQ-Space-for-Linux/issues"
+Documentation = "https://github.com/AlejandroZmtZ/EQ-Space-for-Linux/blob/main/docs/architecture.md"
 
 [project.scripts]
 eqspace = "eqspace.app:main"
@@ -19,4 +43,9 @@ eqspace = "eqspace.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-eqspace = ["data/presets/*.json"]
+eqspace = [
+    "data/presets/*.json",
+    "data/desktop/*.desktop",
+    "data/icons/*.svg",
+    "data/hrtf/*.sofa",
+]

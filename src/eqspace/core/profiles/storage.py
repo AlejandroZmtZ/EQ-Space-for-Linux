@@ -13,6 +13,10 @@ from pathlib import Path
 from eqspace.core.profiles.models import EQProfile
 
 
+def _current(profile: EQProfile) -> EQProfile:
+    return profile.model_copy(update={"version": 2})
+
+
 def profiles_dir() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     return config_home / "eqspace" / "profiles"
@@ -31,7 +35,7 @@ def save_profile(profile: EQProfile) -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(profile.model_dump_json(indent=2))
+            fh.write(_current(profile).model_dump_json(indent=2))
         os.replace(tmp_name, path)
     except BaseException:
         os.unlink(tmp_name)
@@ -43,7 +47,7 @@ def load_profile(name: str) -> EQProfile:
     path = _profile_path(name)
     if not path.exists():
         raise FileNotFoundError(f"no profile named {name!r} at {path}")
-    return EQProfile.model_validate_json(path.read_text(encoding="utf-8"))
+    return _current(EQProfile.model_validate_json(path.read_text(encoding="utf-8")))
 
 
 def list_profiles() -> list[str]:
@@ -66,7 +70,7 @@ def export_profile(profile: EQProfile, path: Path) -> None:
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(profile.model_dump_json(indent=2))
+            fh.write(_current(profile).model_dump_json(indent=2))
         os.replace(tmp_name, path)
     except BaseException:
         os.unlink(tmp_name)
@@ -74,4 +78,4 @@ def export_profile(profile: EQProfile, path: Path) -> None:
 
 
 def import_profile(path: Path) -> EQProfile:
-    return EQProfile.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
+    return _current(EQProfile.model_validate(json.loads(Path(path).read_text(encoding="utf-8"))))

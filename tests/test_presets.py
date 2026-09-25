@@ -18,7 +18,6 @@ EXPECTED_PRESETS = [
     "gaming_footsteps",
     "late_night",
     "loudness_low_listening",
-    "crossfeed_bauer",
 ]
 
 GAIN_LIMIT_DB = 15.0
@@ -124,3 +123,4 @@ class TestFunctionalPresets:
         preset = presets.load_preset("crossfeed_bauer")
         assert preset.spatial.get("type") == "crossfeed"
         assert preset.to_bands() == []
+        assert "crossfeed_bauer" not in presets.list_presets()

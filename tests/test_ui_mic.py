@@ -84,3 +84,17 @@ def test_unload(make_widget):
     widget.apply_button.click()
     widget.unload_button.click()
     assert manager.unloaded == 1
+
+
+def test_mic_widget_has_level_meter(make_widget):
+    from eqspace.core.pipewire.meter import PipeWireLevelMonitor
+    from PySide6.QtWidgets import QProgressBar
+
+    monitor = PipeWireLevelMonitor(level_fn=lambda: 0.65)
+    widget, _ = make_widget(level_monitor=monitor)
+    assert hasattr(widget, "level_bar")
+    assert isinstance(widget.level_bar, QProgressBar)
+    assert widget.meter_widget.isHidden()
+
+    widget.update_meter()
+    assert widget.level_bar.value() == 65

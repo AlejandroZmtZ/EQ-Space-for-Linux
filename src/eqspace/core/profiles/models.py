@@ -2,11 +2,12 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+import math
 
 from eqspace.core.dsp.filter_design import EQBand, VALID_BAND_TYPES
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class BandModel(BaseModel):
@@ -17,6 +18,13 @@ class BandModel(BaseModel):
     gain_db: float
     q: float = Field(gt=0.0)
     enabled: bool = True
+
+    @field_validator("freq_hz", "gain_db", "q")
+    @classmethod
+    def _finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("band settings must be finite")
+        return value
 
     @field_validator("band_type")
     @classmethod
@@ -55,6 +63,13 @@ class EQProfile(BaseModel):
     mic: dict[str, Any] = Field(default_factory=dict)
     output_device: str | None = None
     volume: float = Field(default=1.0, ge=0.0, le=2.0)
+    preamp_db: float = Field(default=0.0, ge=-24.0, le=12.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _supported_version(self) -> "EQProfile":
+        if self.version not in (1, 2):
+            raise ValueError(f"unsupported profile version {self.version}")
+        return self
 
     def to_bands(self) -> list[EQBand]:
         return [band.to_eqband() for band in self.bands]

@@ -45,12 +45,90 @@ def test_parse_pw_dump_node_fields(dump_text):
         volume=1.0,
         mute=False,
         serial=48,
+        description="Built-in Audio Analog Stereo",
     )
+    assert sink.description == "Built-in Audio Analog Stereo"
     source = snapshot.sources[0]
     assert source.volume == pytest.approx(0.65)
     assert source.mute is True
+    assert source.description == "Built-in Audio Analog Stereo"
     brave = next(n for n in snapshot.streams if n.name == "Brave")
     assert brave.app_name == "Brave"
+    assert brave.description == "Playback"
+    obs = next(n for n in snapshot.streams if n.name == "OBS Mic/Aux")
+    assert obs.description == "Desktop Audio"
+
+
+def test_parse_pw_dump_node_description_fallback():
+    # 1. node.description has highest priority
+    dump = [
+        {
+            "id": 10,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "sink1",
+                    "node.description": "From Node Desc",
+                    "device.description": "From Device Desc",
+                    "media.name": "From Media Name",
+                }
+            },
+        }
+    ]
+    snapshot = parse_pw_dump(dump)
+    assert snapshot.sinks[0].description == "From Node Desc"
+
+    # 2. device.description fallback
+    dump = [
+        {
+            "id": 11,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "sink2",
+                    "device.description": "From Device Desc",
+                    "media.name": "From Media Name",
+                }
+            },
+        }
+    ]
+    snapshot = parse_pw_dump(dump)
+    assert snapshot.sinks[0].description == "From Device Desc"
+
+    # 3. media.name fallback
+    dump = [
+        {
+            "id": 12,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Stream/Output/Audio",
+                    "node.name": "stream1",
+                    "media.name": "From Media Name",
+                }
+            },
+        }
+    ]
+    snapshot = parse_pw_dump(dump)
+    assert snapshot.streams[0].description == "From Media Name"
+
+    # 4. None when none present
+    dump = [
+        {
+            "id": 13,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "sink3",
+                }
+            },
+        }
+    ]
+    snapshot = parse_pw_dump(dump)
+    assert snapshot.sinks[0].description is None
 
 
 def test_parse_pw_dump_handles_missing_props_and_params(dump_text):
@@ -88,6 +166,19 @@ def test_registry_snapshot_uses_pw_dump(dump_text):
     registry = PipeWireRegistry(runner=_fake_runner(dump_text))
     snapshot = registry.snapshot()
     assert len(snapshot.sinks) == 1
+
+
+def test_registry_uses_complete_first_snapshot_when_pw_dump_appends_json(dump_text):
+    registry = PipeWireRegistry(runner=_fake_runner(dump_text + "\n[]\n"))
+    snapshot = registry.snapshot()
+    assert len(snapshot.sinks) == 1
+    assert snapshot.sinks[0].id == 48
+
+
+def test_registry_rejects_malformed_trailing_document(dump_text):
+    registry = PipeWireRegistry(runner=_fake_runner(dump_text + "\n{broken"))
+    with pytest.raises(PipeWireUnavailable, match="invalid JSON"):
+        registry.snapshot()
 
 
 def test_registry_unavailable_when_binary_missing():

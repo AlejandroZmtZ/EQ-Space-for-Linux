@@ -18,20 +18,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from PySide6.QtCore import Signal
-
 from eqspace.core.filterchain.mic import MicChainRenderer, deepfilternet_available
+from eqspace.core.pipewire.meter import PipeWireLevelMonitor
 
 
 class MicWidget(QWidget):
@@ -43,12 +43,15 @@ class MicWidget(QWidget):
         manager=None,
         deepfilternet_available_fn: Callable[[], bool] = deepfilternet_available,
         plugin_path: Optional[Path] = None,
+        level_monitor: Optional[PipeWireLevelMonitor] = None,
+        poll_interval_ms: int = 100,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.manager = manager
         self._deepfilternet_available = deepfilternet_available_fn
         self.plugin_path = Path(plugin_path) if plugin_path is not None else None
+        self.level_monitor = level_monitor or PipeWireLevelMonitor()
 
         layout = QVBoxLayout(self)
 
@@ -81,9 +84,23 @@ class MicWidget(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
-        self.monitor_label = QLabel("Input monitor: not implemented yet")
-        self.monitor_label.setStyleSheet("color: #8a8f98;")
-        layout.addWidget(self.monitor_label)
+        self.meter_widget = QWidget()
+        meter_row = QHBoxLayout(self.meter_widget)
+        meter_row.addWidget(QLabel("Input level:"))
+        self.level_bar = QProgressBar()
+        self.level_bar.setRange(0, 100)
+        self.level_bar.setValue(0)
+        self.level_bar.setTextVisible(False)
+        self.level_bar.setFixedHeight(12)
+        self.level_bar.setStyleSheet(
+            "QProgressBar { background: #22252a; border-radius: 4px; border: 1px solid #333842; }"
+            "QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4caf50, stop:0.7 #ffeb3b, stop:1.0 #f44336); border-radius: 3px; }"
+        )
+        meter_row.addWidget(self.level_bar)
+        layout.addWidget(self.meter_widget)
+        # wpctl reports configured volume, not microphone signal activity.
+        # Show this only when a real capture-level source is implemented.
+        self.meter_widget.hide()
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -91,6 +108,12 @@ class MicWidget(QWidget):
 
         layout.addStretch(1)
         self.refresh_status()
+
+        self.poll_timer = None
+
+    def update_meter(self) -> None:
+        level = self.level_monitor.get_level()
+        self.level_bar.setValue(int(level * 100))
 
     # ---- availability ------------------------------------------------------
 
@@ -140,3 +163,17 @@ class MicWidget(QWidget):
             self.status_label.setText(f"Unload failed: {exc}")
             return
         self.status_label.setText("Mic chain unloaded")
+
+    # ---- state export / import ----------------------------------------------
+
+    def get_state(self) -> dict[str, object]:
+        return {
+            "enabled": self.nr_check.isChecked(),
+            "strength": self.strength_slider.value(),
+        }
+
+    def set_state(self, state: dict[str, object]) -> None:
+        if "enabled" in state:
+            self.nr_check.setChecked(bool(state["enabled"]))
+        if "strength" in state:
+            self.strength_slider.setValue(int(state["strength"]))

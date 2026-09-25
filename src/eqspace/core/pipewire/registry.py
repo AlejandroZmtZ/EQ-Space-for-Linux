@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -48,6 +49,7 @@ class PwNode:
     volume: Optional[float]
     mute: Optional[bool]
     serial: Optional[int] = None
+    description: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,12 @@ def _pw_node(entry: dict[str, Any]) -> PwNode:
             serial = int(raw_serial)
         except (TypeError, ValueError):
             serial = None
+    raw_desc = (
+        props.get("node.description")
+        or props.get("device.description")
+        or props.get("media.name")
+    )
+    description = str(raw_desc) if raw_desc is not None else None
     return PwNode(
         id=_node_id(entry),
         name=str(props.get("node.name", "")),
@@ -97,6 +105,7 @@ def _pw_node(entry: dict[str, Any]) -> PwNode:
         volume=volume,
         mute=mute,
         serial=serial,
+        description=description,
     )
 
 
@@ -131,6 +140,28 @@ def parse_pw_dump(data: Any) -> PwSnapshot:
         elif media_class == "Audio/Source":
             sources.append(node)
         elif media_class.startswith("Stream/"):
+            props = _props(entry)
+            app = (props.get("application.name") or "").lower()
+            binary = (props.get("application.process.binary") or "").lower()
+            media_role = (props.get("media.role") or "").lower()
+            node_name = str(props.get("node.name", "")).lower()
+            desc = (node.description or "").lower()
+            ignore_list = {
+                "gnome-shell",
+                "mutter",
+                "gjs",
+                "xdg-desktop-portal",
+                "gnome-control-center",
+                "libcanberra",
+            }
+            if (
+                app in ignore_list
+                or binary in ignore_list
+                or "gnome settings" in desc
+                or media_role == "event"
+                or node_name.startswith("eqspace")
+            ):
+                continue
             streams.append(node)
     return PwSnapshot(
         sinks=tuple(sinks), sources=tuple(sources), streams=tuple(streams)
@@ -177,10 +208,34 @@ class PipeWireRegistry:
         except RuntimeError as exc:
             raise PipeWireUnavailable(str(exc)) from exc
         try:
-            data = json.loads(raw)
+            decoder = json.JSONDecoder()
+            content = raw.lstrip()
+            data, end = decoder.raw_decode(content)
+            # During rapid graph changes pw-dump can append another JSON
+            # document. Its first document is the complete registry snapshot;
+            # validate any trailing documents, then use that snapshot.
+            rest = content[end:].lstrip()
+            while rest:
+                _, end = decoder.raw_decode(rest)
+                rest = rest[end:].lstrip()
         except (json.JSONDecodeError, TypeError) as exc:
             raise PipeWireUnavailable(f"pw-dump returned invalid JSON: {exc}") from exc
         return parse_pw_dump(data)
+
+    def graph_rate(self, *, required: bool = False) -> float:
+        """Read the graph rate; allow a preview fallback only when not required."""
+        try:
+            output = self._runner(("pw-metadata", "-n", "settings", "0", "clock.rate"), self._timeout)
+            match = re.search(r"key:'clock.rate'\s+value:'([0-9]+)'", output)
+            if match and int(match.group(1)) > 0:
+                return float(match.group(1))
+        except (FileNotFoundError, RuntimeError) as exc:
+            if required:
+                raise PipeWireUnavailable(f"Cannot read PipeWire graph rate: {exc}") from exc
+        if required:
+            raise PipeWireUnavailable("Cannot read PipeWire graph rate; check PipeWire settings and retry")
+        logger.info("PipeWire graph rate unavailable; preview uses 48 kHz")
+        return 48000.0
 
     def monitor(
         self,

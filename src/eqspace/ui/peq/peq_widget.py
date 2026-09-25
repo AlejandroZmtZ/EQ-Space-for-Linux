@@ -11,12 +11,13 @@ wired up in a later task.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -79,7 +80,7 @@ class _BandHandles(pg.ScatterPlotItem):
             return
         if ev.isStart():
             points = self.pointsAt(ev.buttonDownPos())
-            if not points:
+            if len(points) == 0:
                 ev.ignore()
                 return
             self._drag_index = int(points[0].data())
@@ -93,7 +94,7 @@ class _BandHandles(pg.ScatterPlotItem):
 
     def wheelEvent(self, ev) -> None:  # noqa: N802
         points = self.pointsAt(ev.pos())
-        if not points:
+        if len(points) == 0:
             ev.ignore()
             return
         ev.accept()
@@ -105,6 +106,8 @@ class PeqWidget(QWidget):
     # Stub for the profiles feature (later task): emitted with the current
     # list of EQBand when the user clicks "Save as profile".
     save_profile_requested = Signal(list)
+    apply_completed = Signal(bool)
+    _worker_result = Signal(bool, str)
 
     def __init__(
         self,
@@ -115,12 +118,25 @@ class PeqWidget(QWidget):
         super().__init__(parent)
         self.manager = manager
         self.fs = fs
+        self.preamp_db = 0.0
         self.bands: list[EQBand] = [
             EQBand(band_type="peaking", freq_hz=1000.0, gain_db=0.0, q=1.0)
         ]
         self.curve_updates = 0  # test hook: incremented on every recompute
+        self._apply_worker = None
+        self._apply_callback = None
+        self._pending_specs: list[FilterSpec] | None = None
+        self._last_good_specs: list[FilterSpec] | None = None
+        self._worker_result.connect(self._finish_apply)
 
         layout = QVBoxLayout(self)
+
+        self.subtitle_label = QLabel(
+            "10-band Parametric EQ: drag handles or adjust table values to sculpt frequency response"
+        )
+        self.subtitle_label.setObjectName("tabSubtitle")
+        self.subtitle_label.setWordWrap(True)
+        layout.addWidget(self.subtitle_label)
 
         self.plot = pg.PlotWidget()
         self.plot.setBackground("#232429")
@@ -129,6 +145,9 @@ class PeqWidget(QWidget):
         self.plot.setLabel("left", "Gain", units="dB")
         self.plot.setXRange(_X_MIN, _X_MAX, padding=0)
         self.plot.setYRange(-GAIN_LIMIT, GAIN_LIMIT, padding=0)
+        self.plot.setToolTip(
+            "Frequency response curve. Drag band handles to move freq/gain, scroll mouse wheel to change Q."
+        )
         axis = self.plot.getAxis("bottom")
         axis.setTicks([[(float(np.log10(f)), str(f)) for f in _FREQ_TICKS]])
         self.curve_item = self.plot.plot(pen=pg.mkPen((91, 157, 255), width=2))
@@ -138,20 +157,38 @@ class PeqWidget(QWidget):
         self.plot.addItem(self.handles)
         layout.addWidget(self.plot, stretch=1)
 
+        preamp_row = QHBoxLayout()
+        preamp_row.addWidget(QLabel("Preamp (dB)"))
+        self.preamp_spin = QDoubleSpinBox()
+        self.preamp_spin.setRange(-24.0, 12.0)
+        self.preamp_spin.setSingleStep(0.5)
+        self.preamp_spin.valueChanged.connect(self.set_preamp)
+        preamp_row.addWidget(self.preamp_spin)
+        self.peak_label = QLabel("")
+        preamp_row.addWidget(self.peak_label, stretch=1)
+        layout.addLayout(preamp_row)
+
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Type", "Freq (Hz)", "Gain (dB)", "Q", "Enabled"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
+        self.table.setToolTip(
+            "Parametric EQ bands table: edit filter type, center frequency, gain, and Q factor."
+        )
         layout.addWidget(self.table)
 
         buttons = QHBoxLayout()
         self.add_button = QPushButton("Add band")
+        self.add_button.setToolTip("Add a new parametric EQ band (up to 16 bands)")
         self.add_button.clicked.connect(self.add_band)
         self.remove_button = QPushButton("Remove band")
+        self.remove_button.setToolTip("Remove the currently selected EQ band")
         self.remove_button.clicked.connect(self.remove_selected_band)
         self.apply_button = QPushButton("Apply")
-        self.apply_button.clicked.connect(self.apply)
+        self.apply_button.setToolTip("Apply current EQ settings to the active PipeWire filter chain")
+        self.apply_button.clicked.connect(lambda: self.apply(async_mode=True))
         self.save_button = QPushButton("Save as profile")
+        self.save_button.setToolTip("Save the current EQ configuration as a named profile")
         self.save_button.clicked.connect(
             lambda: self.save_profile_requested.emit(list(self.bands))
         )
@@ -189,7 +226,17 @@ class PeqWidget(QWidget):
     def set_band(self, index: int, **changes) -> None:
         band = replace(self.bands[index], **changes)
         self.bands[index] = band
-        self._refresh_table()
+        self._update_row(index)
+        self.update_curve()
+
+    def set_preamp(self, value: float) -> None:
+        if not math.isfinite(value) or not -24 <= value <= 12:
+            raise ValueError("Preamp must be between -24 and +12 dB")
+        self.preamp_db = float(value)
+        if self.preamp_spin.value() != value:
+            self.preamp_spin.blockSignals(True)
+            self.preamp_spin.setValue(value)
+            self.preamp_spin.blockSignals(False)
         self.update_curve()
 
     # ---- curve ----------------------------------------------------------
@@ -197,10 +244,21 @@ class PeqWidget(QWidget):
     def update_curve(self) -> None:
         """Recompute the combined response from the current bands."""
         self.curve_updates += 1
-        freqs = np.logspace(np.log10(F_MIN), np.log10(F_MAX), 512)
-        coeffs = design_filters(self.bands, self.fs)
-        db = magnitude_response(coeffs, freqs, self.fs)
+        freqs = np.logspace(np.log10(F_MIN), np.log10(min(F_MAX, self.fs / 2 * 0.999)), 512)
+        try:
+            coeffs = design_filters(self.bands, self.fs)
+            db = magnitude_response(coeffs, freqs, self.fs) + self.preamp_db
+        except ValueError as exc:
+            self.curve_item.setData([], [])
+            self.peak_label.setText("Response unavailable")
+            self.status_label.setText(str(exc))
+            return
         self.curve_item.setData(np.log10(freqs), np.clip(db, -GAIN_LIMIT, GAIN_LIMIT))
+        peak = float(np.max(db))
+        suggested = -max(0.0, peak - self.preamp_db)
+        self.peak_label.setText(
+            f"Estimated peak: {peak:+.1f} dB · Suggested preamp: {suggested if suggested else 0.0:.1f} dB"
+        )
         self.handles.setData(
             x=[float(np.log10(b.freq_hz)) for b in self.bands],
             y=[b.gain_db for b in self.bands],
@@ -263,10 +321,29 @@ class PeqWidget(QWidget):
         self.table.blockSignals(False)
         self.add_button.setEnabled(len(self.bands) < MAX_BANDS)
 
+    def _update_row(self, row: int) -> None:
+        band = self.bands[row]
+        values = (band.band_type, band.freq_hz, band.gain_db, band.q, band.enabled)
+        for column, value in enumerate(values):
+            widget = self.table.cellWidget(row, column)
+            if widget is None:
+                self._refresh_table()
+                return
+            widget.blockSignals(True)
+            try:
+                if isinstance(widget, QComboBox):
+                    widget.setCurrentText(value)
+                elif isinstance(widget, QCheckBox):
+                    widget.setChecked(value)
+                else:
+                    widget.setValue(value)
+            finally:
+                widget.blockSignals(False)
+
     # ---- apply -----------------------------------------------------------
 
     def _filter_specs(self) -> list[FilterSpec]:
-        specs = []
+        specs = [FilterSpec(name="preamp", filter_type="linear", params={"Mult": 10 ** (self.preamp_db / 20), "Add": 0.0})]
         for i, band in enumerate(self.bands):
             if not band.enabled:
                 continue
@@ -279,23 +356,104 @@ class PeqWidget(QWidget):
             )
         return specs
 
-    def apply(self) -> None:
+    def apply(
+        self,
+        async_mode: bool = False,
+        on_done: Optional[Callable[[bool, str], None]] = None,
+    ) -> bool:
         """Push the current bands to the filter-chain manager."""
         if self.manager is None:
             self.status_label.setText("No filter-chain manager configured")
-            return
-        specs = self._filter_specs()
+            if on_done:
+                on_done(False, "No filter-chain manager configured")
+            return False
+        if self._apply_worker is not None:
+            return False
+        if not any(b.enabled for b in self.bands):
+            self.status_label.setText("Apply failed: no enabled EQ bands")
+            if on_done:
+                on_done(False, "no enabled EQ bands")
+            return False
         try:
+            design_filters(self.bands, self.fs)
+            specs = self._filter_specs()
+        except ValueError as exc:
+            self.status_label.setText(f"Apply failed: {exc}")
+            if on_done:
+                on_done(False, self._brief_error(exc))
+            return False
+
+        def _do_apply() -> str:
             if self.manager.is_loaded:
-                for spec in specs:
-                    for param, value in spec.params.items():
-                        self.manager.set_filter_param(
-                            self.manager.node_name, f"{spec.name}:{param}", value
-                        )
+                if hasattr(self.manager, "reload"):
+                    self.manager.reload(specs)
+                else:
+                    for spec in specs:
+                        for param, value in spec.params.items():
+                            self.manager.set_filter_param(
+                                self.manager.node_name, f"{spec.name}:{param}", value
+                            )
             else:
                 self.manager.load(specs)
+            if hasattr(self.manager, "verify_controls"):
+                self.manager.verify_controls(specs)
+            return "Applied ✓"
+
+        if async_mode:
+            from ..async_worker import run_async
+
+            self.status_label.setText("⏳ Applying filter chain...")
+            self.apply_button.setEnabled(False)
+
+            self._apply_callback = on_done
+            self._pending_specs = specs
+            self._apply_worker = run_async(_do_apply, on_finished=self._worker_result.emit)
+            return True
+
+        try:
+            _do_apply()
         except Exception as exc:
             logger.exception("apply failed")
-            self.status_label.setText(f"Apply failed: {exc}")
-            return
-        self.status_label.setText("Applied")
+            self.status_label.setText(f"Apply failed: {self._brief_error(exc)}")
+            if on_done:
+                on_done(False, self._brief_error(exc))
+            return False
+        self._last_good_specs = specs
+        self.status_label.setText("Applied ✓")
+        self.apply_completed.emit(True)
+        if on_done:
+            on_done(True, "Applied ✓")
+        return True
+
+    @Slot(bool, str)
+    def _finish_apply(self, success: bool, msg: str) -> None:
+        self._apply_worker = None
+        self.apply_button.setEnabled(True)
+        if success:
+            self._last_good_specs = self._pending_specs
+            self.status_label.setText("Applied ✓")
+        else:
+            self.status_label.setText(f"Apply failed: {self._brief_error(msg)}")
+        self.apply_completed.emit(success)
+        callback = self._apply_callback
+        self._apply_callback = None
+        self._pending_specs = None
+        if callback:
+            callback(success, msg if success else self._brief_error(msg))
+
+    @staticmethod
+    def _brief_error(error: object) -> str:
+        detail = str(error)
+        if "unverified" in detail.lower():
+            return "EQ state unverified. Switch to direct output and retry."
+        if "previous controls restored" in detail.lower():
+            return "EQ update failed; previous settings restored. Retry."
+        if "could not be verified" in detail.lower():
+            return "EQ controls could not be verified. Check PipeWire and retry."
+        if "no node named" in detail.lower():
+            return "EQ device changed. Retry Apply."
+        if "timed out" in detail.lower():
+            return "PipeWire timed out. Check the output and retry."
+        if "pw-cli set-param" in detail:
+            return "PipeWire rejected EQ controls. Check the log and retry."
+        return detail.splitlines()[0][:180]

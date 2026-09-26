@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -167,6 +167,7 @@ class MixerWidget(QWidget):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self.mutation_allowed: Callable[[], bool] = lambda: True
         self.registry = registry or PipeWireRegistry(timeout=2.0)
         self.control: ControlLike = control or _control  # type: ignore[assignment]
         self._physical_sinks: tuple[PwNode, ...] = ()
@@ -245,6 +246,9 @@ class MixerWidget(QWidget):
         return self._selected_output_name
 
     def is_routed(self) -> bool:
+        graph = getattr(self, "graph_controller", None)
+        if graph is not None:
+            return graph.is_eq_active()
         checker = getattr(self.control, "is_system_routed", _control.is_system_routed)
         runner = getattr(self.registry, "_runner", None)
         try:
@@ -284,9 +288,11 @@ class MixerWidget(QWidget):
 
     def _linked_output_name(self, links: dict[str, list[str]]) -> Optional[str]:
         physical_names = {s.name for s in self._physical_sinks}
+        graph = getattr(self, "graph_controller", None)
+        output_stage = (graph.limiter_name or (graph._eq_name() if graph.eq_enabled else None) or graph.spatial_name) if graph is not None else "eqspace.filter-chain"
         channels = []
         for channel in ("FL", "FR"):
-            port = f"eqspace.filter-chain.playback:output_{channel}"
+            port = f"{output_stage}.playback:output_{channel}"
             channels.append({
                 destination.rsplit(":", 1)[0]
                 for destination in links.get(port, [])
@@ -330,11 +336,11 @@ class MixerWidget(QWidget):
                 )
             else:
                 self.routing_status_label.setText("EQ on")
-            self.routing_button.setText("Use direct output")
+            self.routing_button.setText("Turn off EQ" if getattr(self, "graph_controller", None) else "Use direct output")
             self.routing_button.setEnabled(True)
-            self.device_combo.setEnabled(False)
-            self.device_combo.setToolTip("Use direct output to change the listening device")
-            self.device_hint.setVisible(True)
+            self.device_combo.setEnabled(bool(self._physical_sinks))
+            self.device_combo.setToolTip("Physical device where sound plays")
+            self.device_hint.setVisible(False)
         else:
             if output and links_available and misrouted_count:
                 noun = "app" if misrouted_count == 1 else "apps"
@@ -344,14 +350,53 @@ class MixerWidget(QWidget):
             else:
                 self.routing_status_label.setText("EQ off" if output else "No listening device available")
             self.routing_button.setText("Turn on EQ")
-            chain_available = any(s.name == "eqspace.filter-chain" for s in self._all_sinks)
+            graph = getattr(self, "graph_controller", None)
+            chain_available = (bool(graph._eq_name()) if graph is not None else
+                               any(s.name == "eqspace.filter-chain" for s in self._all_sinks))
             self.routing_button.setEnabled(chain_available and output is not None)
             self.routing_button.setToolTip("Apply a preset first" if not chain_available else "Route system audio through EQ-Space")
             self.device_combo.setEnabled(bool(self._physical_sinks))
             self.device_combo.setToolTip("Physical device where sound plays")
             self.device_hint.setVisible(False)
 
+        graph = getattr(self, "graph_controller", None)
+        if graph is not None:
+            stages = graph.active_stages()
+            if stages:
+                combination = " + ".join(stages)
+                self.routing_status_label.setText(
+                    f"{combination} active" if graph.is_path_verified()
+                    else f"{combination} · Route unverified"
+                )
+            else:
+                self.routing_status_label.setText(
+                    "EQ off · Direct output" if graph.is_path_verified()
+                    else "Direct output · Route unverified"
+                )
+            self.routing_button.setText("Turn off EQ" if graph.eq_enabled else "Turn on EQ")
+
+        self.refresh_mutation_controls()
+
+    def refresh_mutation_controls(self) -> None:
+        """Keep graph-changing controls disabled while Apply owns the graph."""
+        if not self.mutation_allowed():
+            self.routing_button.setEnabled(False)
+            self.device_combo.setEnabled(False)
+
     def _on_toggle_routing(self) -> None:
+        if not self.mutation_allowed():
+            self.status_label.setText("Wait for Apply to finish before changing the route.")
+            return
+        graph = getattr(self, "graph_controller", None)
+        if graph is not None:
+            try:
+                graph.eq_off() if graph.eq_enabled else graph.eq_on()
+            except Exception as exc:
+                self.status_label.setText(f"Could not change EQ route: {exc}")
+                return
+            self.status_label.setText("")
+            self.refresh()
+            return
         enable = not self.is_routed()
         if enable and not any(s.name == "eqspace.filter-chain" for s in self._all_sinks):
             self.status_label.setText("Apply an EQ preset first to turn on EQ.")
@@ -374,6 +419,7 @@ class MixerWidget(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        self.refresh_mutation_controls()
         try:
             snapshot = self.registry.snapshot()
         except PipeWireUnavailable as exc:
@@ -389,7 +435,10 @@ class MixerWidget(QWidget):
         links = observed_links or {}
         self._rebuild_sinks(snapshot.sinks, routed, links)
         self._rebuild_streams(snapshot.streams)
-        target = "eqspace.filter-chain" if routed else self._selected_output_name
+        graph = getattr(self, "graph_controller", None)
+        target = ((graph.spatial_name or graph._eq_name()) if routed and graph is not None else
+                  "eqspace.filter-chain" if routed else
+                  graph.entrance_name() if graph is not None and graph.entrance_name() else self._selected_output_name)
         self._update_routing_banner(
             routed,
             self._linked_output_name(links) if routed else None,
@@ -407,10 +456,12 @@ class MixerWidget(QWidget):
         physical = tuple(s for s in sinks if not is_eqspace_sink(s))
         self._physical_sinks = physical
         names = {s.name for s in physical}
-        if routed:
-            selected = self._linked_output_name(links) or self._selected_output_name
+        if self._selected_output_name and self._selected_output_name in names:
+            selected = self._selected_output_name
+        elif routed:
+            selected = self._linked_output_name(links) or self._default_physical_name()
         else:
-            selected = self._default_physical_name() or self._selected_output_name
+            selected = self._default_physical_name()
         if selected not in names:
             selected = physical[0].name if physical else None
         self._selected_output_name = selected
@@ -489,26 +540,59 @@ class MixerWidget(QWidget):
         self.status_label.setText("")
 
     def _on_default_sink(self, index: int) -> None:
-        name = self.device_combo.itemData(index)
-        if not name or name == self._selected_output_name:
-            return
-        if self.is_routed():
-            self.status_label.setText("Use direct output before changing the listening device.")
-            return
-        setter = getattr(self.control, "set_system_routing", _control.set_system_routing)
-        self._master_volume_timer.stop()
-        try:
-            try:
-                setter(False, fallback_sink_name=name, registry=self.registry)
-            except TypeError:
-                setter(False, fallback_sink_name=name)
-        except Exception as exc:
-            logger.warning("output change failed: %s", exc)
-            self.status_label.setText(f"Could not change output: {exc}")
+        if not self.mutation_allowed():
             self.device_combo.blockSignals(True)
             self.device_combo.setCurrentIndex(self.device_combo.findData(self._selected_output_name))
             self.device_combo.blockSignals(False)
+            self.status_label.setText("Wait for Apply to finish before changing output.")
             return
+        name = self.device_combo.itemData(index)
+        if not name or name == self._selected_output_name:
+            return
+        self._master_volume_timer.stop()
+        graph = getattr(self, "graph_controller", None)
+        if graph is not None:
+            try:
+                graph.set_output(name)
+            except Exception as exc:
+                self.status_label.setText(f"Could not change output: {exc}")
+                self.device_combo.blockSignals(True)
+                self.device_combo.setCurrentIndex(self.device_combo.findData(self._selected_output_name))
+                self.device_combo.blockSignals(False)
+                return
+            self._selected_output_name = name
+            self._sync_master_volume()
+            self.refresh()
+            return
+        if self.is_routed():
+            linker = getattr(self.control, "link_filter_output", _control.link_filter_output)
+            runner = getattr(self.registry, "_runner", None)
+            try:
+                try:
+                    linker("eqspace.filter-chain", name, runner=runner)
+                except TypeError:
+                    linker("eqspace.filter-chain", name)
+            except Exception as exc:
+                logger.warning("output link change failed: %s", exc)
+                self.status_label.setText(f"Could not change output: {exc}")
+                self.device_combo.blockSignals(True)
+                self.device_combo.setCurrentIndex(self.device_combo.findData(self._selected_output_name))
+                self.device_combo.blockSignals(False)
+                return
+        else:
+            setter = getattr(self.control, "set_system_routing", _control.set_system_routing)
+            try:
+                try:
+                    setter(False, fallback_sink_name=name, registry=self.registry)
+                except TypeError:
+                    setter(False, fallback_sink_name=name)
+            except Exception as exc:
+                logger.warning("output change failed: %s", exc)
+                self.status_label.setText(f"Could not change output: {exc}")
+                self.device_combo.blockSignals(True)
+                self.device_combo.setCurrentIndex(self.device_combo.findData(self._selected_output_name))
+                self.device_combo.blockSignals(False)
+                return
         self._selected_output_name = name
         self._volume_retry_at = 0.0
         self.status_label.setText("")

@@ -24,6 +24,13 @@ DEFAULT_DESCRIPTION = "EQ-Space Spatial"
 #: Layout channel -> speaker azimuth mappings.
 LAYOUT_CHANNEL_SPEAKER_MAP: dict[str, tuple[tuple[str, float], ...]] = {
     "Stereo": (("FL", -30.0), ("FR", 30.0)),
+    "HoloSpace 3D": (
+        ("FL", -30.0),
+        ("FR", 30.0),
+        ("FC", 0.0),
+        ("SL", -100.0),
+        ("SR", 100.0),
+    ),
     "5.1": (
         ("FL", -30.0),
         ("FR", 30.0),
@@ -130,12 +137,16 @@ class SpatialChainRenderer:
         left_inputs = [m for i, m in enumerate(mixers) if i % 2 == 0]
         right_inputs = [m for i, m in enumerate(mixers) if i % 2 == 1]
         for ear, inputs in (("L", left_inputs), ("R", right_inputs)):
+            controls = " ".join(
+                f'{_spa_quote(f"Gain {k+1}")} = {per_speaker_gain!r}'
+                for k in range(len(inputs))
+            )
             nodes.append(
                 "                {\n"
                 "                    type  = builtin\n"
                 f"                    name  = {_spa_quote(f'mix_{ear}')}\n"
                 "                    label = mixer\n"
-                f"                    control = {{ \"Gain 1\" = {per_speaker_gain!r} }}\n"
+                f"                    control = {{ {controls} }}\n"
                 f"                    input  = [ {' '.join(_spa_quote(p) for p in inputs)} ]\n"
                 f"                    output = [ {_spa_quote(f'{self.node_name}:capture_{ear}')} ]\n"
                 "                }"
@@ -193,28 +204,80 @@ class SpatialChainRenderer:
         links = []
         inputs = []
 
-        for idx, spk in enumerate(speakers):
-            channel = spk.channel or (channels[idx] if idx < len(channels) else f"ch{idx}")
-            conv_l = f"conv_{channel}_L"
-            conv_r = f"conv_{channel}_R"
-            copy_n = f"copy_{channel}"
-            nodes.append(f"{{ type = builtin label = copy name = {_spa_quote(copy_n)} }}")
-            nodes.append(
-                f"{{ type = builtin label = convolver name = {_spa_quote(conv_l)} "
-                f"config = {{ filename = {_spa_quote(str(spk.left_ir))} channel = 0 }} }}"
-            )
-            nodes.append(
-                f"{{ type = builtin label = convolver name = {_spa_quote(conv_r)} "
-                f"config = {{ filename = {_spa_quote(str(spk.right_ir))} channel = 0 }} }}"
-            )
-            links.append(f"{{ output = {_spa_quote(f'{copy_n}:Out')} input = {_spa_quote(f'{conv_l}:In')} }}")
-            links.append(f"{{ output = {_spa_quote(f'{copy_n}:Out')} input = {_spa_quote(f'{conv_r}:In')} }}")
-            links.append(f"{{ output = {_spa_quote(f'{conv_l}:Out')} input = {_spa_quote(f'mix_l:In {idx+1}')} }}")
-            links.append(f"{{ output = {_spa_quote(f'{conv_r}:Out')} input = {_spa_quote(f'mix_r:In {idx+1}')} }}")
-            inputs.append(_spa_quote(f"{copy_n}:In"))
+        is_stereo_input = len(channels) == 2 and tuple(channels) == ("FL", "FR")
+        is_stereo_virtualization = is_stereo_input and len(speakers) > 2
 
-        nodes.append("{ type = builtin label = mixer name = \"mix_l\" }")
-        nodes.append("{ type = builtin label = mixer name = \"mix_r\" }")
+        if is_stereo_virtualization:
+            # Multi-speaker stage virtualized from stereo input (e.g. HoloSpace 3D)
+            nodes.append('{ type = builtin label = copy name = "copy_FL" }')
+            nodes.append('{ type = builtin label = copy name = "copy_FR" }')
+            inputs.append('"copy_FL:In"')
+            inputs.append('"copy_FR:In"')
+
+            has_center = any(
+                spk.channel == "FC" or abs(spk.azimuth) < 1e-3
+                for spk in speakers
+            )
+            if has_center:
+                nodes.append(
+                    '{ type = builtin label = mixer name = "mix_fc" '
+                    'control = { "Gain 1" = 0.5 "Gain 2" = 0.5 } }'
+                )
+                links.append('{ output = "copy_FL:Out" input = "mix_fc:In 1" }')
+                links.append('{ output = "copy_FR:Out" input = "mix_fc:In 2" }')
+
+            for idx, spk in enumerate(speakers):
+                channel = spk.channel or f"ch{idx}"
+                conv_l = f"conv_{channel}_L"
+                conv_r = f"conv_{channel}_R"
+                nodes.append(
+                    f"{{ type = builtin label = convolver name = {_spa_quote(conv_l)} "
+                    f"config = {{ filename = {_spa_quote(str(spk.left_ir))} channel = 0 }} }}"
+                )
+                nodes.append(
+                    f"{{ type = builtin label = convolver name = {_spa_quote(conv_r)} "
+                    f"config = {{ filename = {_spa_quote(str(spk.right_ir))} channel = 0 }} }}"
+                )
+
+                if spk.channel == "FC" or abs(spk.azimuth) < 1e-3:
+                    source_out = "mix_fc:Out"
+                elif spk.channel in ("FL", "SL", "RL") or spk.azimuth < 0.0:
+                    source_out = "copy_FL:Out"
+                else:
+                    source_out = "copy_FR:Out"
+
+                links.append(f"{{ output = {_spa_quote(source_out)} input = {_spa_quote(f'{conv_l}:In')} }}")
+                links.append(f"{{ output = {_spa_quote(source_out)} input = {_spa_quote(f'{conv_r}:In')} }}")
+                links.append(f"{{ output = {_spa_quote(f'{conv_l}:Out')} input = {_spa_quote(f'mix_l:In {idx+1}')} }}")
+                links.append(f"{{ output = {_spa_quote(f'{conv_r}:Out')} input = {_spa_quote(f'mix_r:In {idx+1}')} }}")
+        else:
+            for idx, spk in enumerate(speakers):
+                channel = spk.channel or (channels[idx] if idx < len(channels) else f"ch{idx}")
+                conv_l = f"conv_{channel}_L"
+                conv_r = f"conv_{channel}_R"
+                copy_n = f"copy_{channel}"
+                nodes.append(f"{{ type = builtin label = copy name = {_spa_quote(copy_n)} }}")
+                nodes.append(
+                    f"{{ type = builtin label = convolver name = {_spa_quote(conv_l)} "
+                    f"config = {{ filename = {_spa_quote(str(spk.left_ir))} channel = 0 }} }}"
+                )
+                nodes.append(
+                    f"{{ type = builtin label = convolver name = {_spa_quote(conv_r)} "
+                    f"config = {{ filename = {_spa_quote(str(spk.right_ir))} channel = 0 }} }}"
+                )
+                links.append(f"{{ output = {_spa_quote(f'{copy_n}:Out')} input = {_spa_quote(f'{conv_l}:In')} }}")
+                links.append(f"{{ output = {_spa_quote(f'{copy_n}:Out')} input = {_spa_quote(f'{conv_r}:In')} }}")
+                links.append(f"{{ output = {_spa_quote(f'{conv_l}:Out')} input = {_spa_quote(f'mix_l:In {idx+1}')} }}")
+                links.append(f"{{ output = {_spa_quote(f'{conv_r}:Out')} input = {_spa_quote(f'mix_r:In {idx+1}')} }}")
+                inputs.append(_spa_quote(f"{copy_n}:In"))
+
+        per_speaker_gain = gain / len(speakers)
+        mix_controls = " ".join(
+            f'{_spa_quote(f"Gain {k+1}")} = {per_speaker_gain:g}'
+            for k in range(len(speakers))
+        )
+        nodes.append(f"{{ type = builtin label = mixer name = \"mix_l\" control = {{ {mix_controls} }} }}")
+        nodes.append(f"{{ type = builtin label = mixer name = \"mix_r\" control = {{ {mix_controls} }} }}")
 
         nodes_str = " ".join(nodes)
         links_str = " ".join(links)

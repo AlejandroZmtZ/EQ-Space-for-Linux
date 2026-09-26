@@ -22,7 +22,8 @@ from typing import Dict, Optional, Protocol, Sequence, Tuple
 import numpy as np
 
 #: Standard virtual-speaker azimuths in degrees (negative = left).
-SPEAKER_AZIMUTHS = (-110.0, -90.0, -30.0, 0.0, 30.0, 90.0, 110.0)
+SPEAKER_AZIMUTHS = (-110.0, -100.0, -90.0, -30.0, 0.0, 30.0, 90.0, 100.0, 110.0)
+
 
 #: Tolerance in degrees when matching a SOFA measurement to an azimuth.
 AZIMUTH_TOLERANCE_DEG = 2.5
@@ -99,6 +100,21 @@ def is_builtin_kemar(path: Path | str) -> bool:
         return p.name == "kemar_default.sofa" or p.resolve() == builtin_kemar_path().resolve()
     except Exception:
         return p.name == "kemar_default.sofa"
+
+
+def holospace_default_path() -> Path:
+    """Return path to the bundled built-in HoloSpace 3D default profile."""
+    return Path(__file__).resolve().parent.parent.parent / "data" / "hrtf" / "holospace_default.sofa"
+
+
+def is_holospace_default(path: Path | str) -> bool:
+    """Return True if path represents the built-in HoloSpace 3D profile."""
+    p = Path(path)
+    try:
+        return p.resolve() == holospace_default_path().resolve()
+    except Exception:
+        return p == holospace_default_path()
+
 
 
 def generate_woodworth_kemar_irs(
@@ -195,6 +211,162 @@ class SyntheticKemarExtractor:
         return ExtractedIRs(sample_rate=self.fs, irs=irs)
 
 
+def generate_holospace_irs(
+    azimuths_deg: Sequence[float],
+    fs: float = 48000.0,
+    n_samples: int = 512,
+    head_radius: float = 0.0875,
+    speed_of_sound: float = 343.0,
+    pinna_notch_hz: float = 7100.0,
+    pinna_notch_q: float = 3.0,
+    pinna_notch_gain_db: float = -8.0,
+    reflection_delay_ms: float = 12.0,
+    reflection_gain_db: float = -12.0,
+) -> Dict[float, Tuple[np.ndarray, np.ndarray]]:
+    """Synthesize 3D binaural IRs using HoloSpace signature model.
+
+    Combines:
+    1. Woodworth spherical head diffraction + ITD delay.
+    2. Pinna elevation notch filtering (~7.1 kHz) to create height dimension
+       and externalization.
+    3. Early room reflection (~12 ms delay, -12 dB) to break in-head barrier.
+    """
+    import scipy.signal
+    from .biquads import peaking
+
+    a = head_radius
+    c = speed_of_sound
+    w0 = 2.0 * c / a  # ~7840 rad/s
+    t0 = 10.0  # pre-delay samples to preserve causality
+
+    notch_coeffs = None
+    if pinna_notch_hz < fs / 2.0:
+        notch_coeffs = peaking(
+            f0_hz=pinna_notch_hz,
+            gain_db=pinna_notch_gain_db,
+            q=pinna_notch_q,
+            fs=fs,
+        )
+
+    refl_samples = int(round(reflection_delay_ms * 1e-3 * fs))
+    if refl_samples >= n_samples:
+        refl_samples = max(1, n_samples - 48)
+    refl_gain = 10.0 ** (reflection_gain_db / 20.0)
+
+    irs: Dict[float, Tuple[np.ndarray, np.ndarray]] = {}
+    for az in azimuths_deg:
+        az_flt = float(az)
+        theta = np.deg2rad(abs(az_flt))
+        if theta <= np.pi / 2.0:
+            itd = (a / c) * (np.sin(theta) + theta)
+        else:
+            itd = (a / c) * (np.sin(np.pi - theta) + theta)
+
+        delay_samples = itd * fs
+        alpha_ipsi = 1.0 + 0.3 * np.sin(theta)
+        alpha_contra = 1.0 / (1.0 + 2.5 * np.sin(theta))
+
+        def _make_ir(alpha: float, delay: float) -> np.ndarray:
+            a0 = 2.0 * fs + w0
+            b0 = (2.0 * fs + alpha * w0) / a0
+            b1 = (alpha * w0 - 2.0 * fs) / a0
+            a1 = (w0 - 2.0 * fs) / a0
+
+            resp = np.zeros(n_samples, dtype=np.float64)
+            resp[0] = b0
+            if n_samples > 1:
+                resp[1] = b1 - a1 * resp[0]
+            for n in range(2, n_samples):
+                resp[n] = -a1 * resp[n - 1]
+
+            d_int = int(np.floor(delay))
+            d_frac = delay - d_int
+            delayed = np.zeros(n_samples, dtype=np.float64)
+            if d_int < n_samples - 1:
+                delayed[d_int:] = (1.0 - d_frac) * resp[: n_samples - d_int]
+                if d_int + 1 < n_samples:
+                    delayed[d_int + 1 :] += d_frac * resp[: n_samples - d_int - 1]
+            return delayed
+
+        if az_flt < 0.0:  # Left source -> Left ear ipsi, Right ear contra
+            left = _make_ir(alpha_ipsi, t0)
+            right = _make_ir(alpha_contra, t0 + delay_samples)
+        elif az_flt > 0.0:  # Right source -> Right ear ipsi, Left ear contra
+            left = _make_ir(alpha_contra, t0 + delay_samples)
+            right = _make_ir(alpha_ipsi, t0)
+        else:  # Center (0.0) -> Symmetric
+            left = _make_ir(1.0, t0)
+            right = _make_ir(1.0, t0)
+
+        # Apply pinna elevation notch filter (~7.1 kHz)
+        if notch_coeffs is not None:
+            b = [notch_coeffs.b0, notch_coeffs.b1, notch_coeffs.b2]
+            a_vec = [notch_coeffs.a0, notch_coeffs.a1, notch_coeffs.a2]
+            left = scipy.signal.lfilter(b, a_vec, left)
+            right = scipy.signal.lfilter(b, a_vec, right)
+
+        # Add early room reflection (~12 ms delay, -12 dB)
+        if refl_samples < n_samples:
+            refl_len = n_samples - refl_samples
+            left[refl_samples : refl_samples + refl_len] += refl_gain * (
+                0.8 * left[:refl_len] + 0.2 * right[:refl_len]
+            )
+            right[refl_samples : refl_samples + refl_len] += refl_gain * (
+                0.8 * right[:refl_len] + 0.2 * left[:refl_len]
+            )
+
+        peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+        if peak > 0.0:
+            left /= peak
+            right /= peak
+
+        irs[az_flt] = (left, right)
+
+    return irs
+
+
+class HoloSpaceExtractor:
+    """Built-in IRExtractor using HoloSpace 3D signature analytical model."""
+
+    def __init__(
+        self,
+        fs: float = 48000.0,
+        n_samples: int = 512,
+        head_radius: float = 0.0875,
+        speed_of_sound: float = 343.0,
+        pinna_notch_hz: float = 7100.0,
+        pinna_notch_q: float = 3.0,
+        pinna_notch_gain_db: float = -8.0,
+        reflection_delay_ms: float = 12.0,
+        reflection_gain_db: float = -12.0,
+    ) -> None:
+        self.fs = fs
+        self.n_samples = n_samples
+        self.head_radius = head_radius
+        self.speed_of_sound = speed_of_sound
+        self.pinna_notch_hz = pinna_notch_hz
+        self.pinna_notch_q = pinna_notch_q
+        self.pinna_notch_gain_db = pinna_notch_gain_db
+        self.reflection_delay_ms = reflection_delay_ms
+        self.reflection_gain_db = reflection_gain_db
+
+    def extract(self, path: Path, azimuths_deg: Sequence[float]) -> ExtractedIRs:
+        irs = generate_holospace_irs(
+            azimuths_deg,
+            fs=self.fs,
+            n_samples=self.n_samples,
+            head_radius=self.head_radius,
+            speed_of_sound=self.speed_of_sound,
+            pinna_notch_hz=self.pinna_notch_hz,
+            pinna_notch_q=self.pinna_notch_q,
+            pinna_notch_gain_db=self.pinna_notch_gain_db,
+            reflection_delay_ms=self.reflection_delay_ms,
+            reflection_gain_db=self.reflection_gain_db,
+        )
+        return ExtractedIRs(sample_rate=self.fs, irs=irs)
+
+
+
 
 def _nearest_azimuth(positions: np.ndarray, target_deg: float) -> int:
     azimuths = np.asarray(positions, dtype=np.float64)[:, 0]
@@ -275,7 +447,9 @@ def extract_speaker_irs(
         return paths
 
     if extractor is None:
-        if is_builtin_kemar(sofa_path):
+        if is_holospace_default(sofa_path):
+            extractor = HoloSpaceExtractor(fs=sample_rate)
+        elif is_builtin_kemar(sofa_path):
             extractor = SyntheticKemarExtractor(fs=sample_rate)
         else:
             extractor = PySofaExtractor()

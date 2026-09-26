@@ -52,5 +52,17 @@ class TestCrossfeedDSP:
         assert "media.class = Audio/Sink" in args
         assert "node.name" in args
         assert "filter.graph" in args
-        assert "bq_lowpass" in args or "convolver" in args or "builtin" in args
+        assert "bq_lowpass" in args
+        assert '"Gain 2"' in args
+        # bq_lowpass must not have Gain control (ignored by PipeWire)
+        assert 'label = bq_lowpass name = "lp_l2r" control = { "Freq" = 700 "Q" = 0.5 }' in args
+        # Linear gain for -6.0 dB is ~0.501187
+        bauer_gain = 10.0 ** (-6.0 / 20.0)
+        assert f'"Gain 2" = {bauer_gain:g}' in args
         assert "'" not in args  # Single-line SPA requirement
+
+        # Check meier preset
+        args_meier = render_crossfeed_chain_args(preset="meier", fs=48000.0)
+        assert 'label = bq_lowpass name = "lp_l2r" control = { "Freq" = 650 "Q" = 0.5 }' in args_meier
+        meier_gain = 10.0 ** (-4.5 / 20.0)
+        assert f'"Gain 2" = {meier_gain:g}' in args_meier

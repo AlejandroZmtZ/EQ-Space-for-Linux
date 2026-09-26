@@ -72,18 +72,20 @@ def render_crossfeed_chain_args(
     """Render a single-line SPA argument string for PipeWire filter-chain."""
     cfg = CROSSFEED_PRESETS.get(preset.lower(), CROSSFEED_PRESETS["bauer"])
     f0 = cfg.f0_hz
-    gain_db = cfg.feed_db
+    gain_linear = 10.0 ** (cfg.feed_db / 20.0)
 
     # Node definitions using PipeWire builtin copy, bq_lowpass, and mixer nodes
     nodes = (
         '{ type = builtin label = copy name = "copy_l" } '
         '{ type = builtin label = copy name = "copy_r" } '
         f'{{ type = builtin label = bq_lowpass name = "lp_l2r" '
-        f'control = {{ "Freq" = {f0:g} "Q" = 0.5 "Gain" = {gain_db:g} }} }} '
+        f'control = {{ "Freq" = {f0:g} "Q" = 0.5 }} }} '
         f'{{ type = builtin label = bq_lowpass name = "lp_r2l" '
-        f'control = {{ "Freq" = {f0:g} "Q" = 0.5 "Gain" = {gain_db:g} }} }} '
-        '{ type = builtin label = mixer name = "mix_l" } '
-        '{ type = builtin label = mixer name = "mix_r" }'
+        f'control = {{ "Freq" = {f0:g} "Q" = 0.5 }} }} '
+        f'{{ type = builtin label = mixer name = "mix_l" '
+        f'control = {{ "Gain 1" = 1.0 "Gain 2" = {gain_linear:g} }} }} '
+        f'{{ type = builtin label = mixer name = "mix_r" '
+        f'control = {{ "Gain 1" = 1.0 "Gain 2" = {gain_linear:g} }} }}'
     )
 
     links = (

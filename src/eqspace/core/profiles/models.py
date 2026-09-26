@@ -7,7 +7,7 @@ import math
 
 from eqspace.core.dsp.filter_design import EQBand, VALID_BAND_TYPES
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class BandModel(BaseModel):
@@ -64,10 +64,22 @@ class EQProfile(BaseModel):
     output_device: str | None = None
     volume: float = Field(default=1.0, ge=0.0, le=2.0)
     preamp_db: float = Field(default=0.0, ge=-24.0, le=12.0, allow_inf_nan=False)
+    spatial_enabled: bool | None = False
+    automatic_headroom: bool = True
+    limiter_enabled: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("version", SCHEMA_VERSION) in (1, 2):
+            value = dict(value)
+            value.setdefault("automatic_headroom", False)
+            value.setdefault("spatial_enabled", None)
+        return value
 
     @model_validator(mode="after")
     def _supported_version(self) -> "EQProfile":
-        if self.version not in (1, 2):
+        if self.version not in (1, 2, 3):
             raise ValueError(f"unsupported profile version {self.version}")
         return self
 

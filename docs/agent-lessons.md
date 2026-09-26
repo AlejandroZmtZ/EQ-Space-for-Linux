@@ -8,8 +8,16 @@ Read [architecture](architecture.md) before changing Apply or routing. This guid
 - Do not destroy an EQ sink while active playback remains linked to it. Verify both default route and active output links when changing graph shape or falling back to direct output.
 - Treat `pw-cli set-param` command status as ambiguous on timeout. Read back `Props`; retry once after resolving the current node ID; verify rollback before calling old controls safe.
 - Mark a preset **Active** only after requested controls and EQ routing have been verified. Clear cached good state when restoration is unverified.
-- Keep the preamp manual and per profile. Validate actual PipeWire graph rate for Apply; a preview rate fallback cannot authorize a potentially above-Nyquist filter.
-- Save profile JSON atomically and continue to read version 1 profiles with a zero dB preamp.
+- Keep manual preamp separate from automatic static trim. Validate actual PipeWire graph rate for Apply; a preview rate fallback cannot authorize a potentially above-Nyquist filter.
+- Save profile JSON atomically as v3; continue to read v1/v2 with their manual gain and automatic trim disabled.
+- Route Spatial through EQ when both are enabled. Stage replacements under unique names and verify both output channels and active application ports before retiring the previous owner.
+- During failed graph replacement, do not unload a candidate whose route could still be active until the previous path or direct output is verified. On quit, hand every observed active stream to the selected physical sink, verify the default and stream links, and only then destroy any module owner. If verification fails, keep the owner alive and block close so playback is not pointed at a destroyed sink.
+
+- LSP descriptor detection does not prove LV2 hosting support. Verify the matching native PipeWire helper and the live limiter control readback. Only the limiter owner may receive the user-local module directory. Preserve limiter selection during EQ edits and packaged preset changes; verify the entire remaining path after bypass or output changes.
+
+- Prepare the maximum old/new Spatial reserve before publishing a replacement path; release excess reserve only after verification. Preserve a native output gain stage when bypassing EQ, so Spatial trim does not disappear with EQ bands.
+- Headroom changes must use the applied profile snapshot and applied specs. Never reconstruct live filters from editor values during a Spatial or limiter action. A layout-changing reload can destroy the sink even if the user has not clicked Apply.
+- On failed profile Apply, restore conservative EQ controls before reconnecting, then restore the previous limiter. Retain owners whose unload fails for a later verified shutdown retry. Serialize all external graph-changing UI actions with Apply.
 
 ## Reproducible checks
 

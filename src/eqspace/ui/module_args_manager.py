@@ -11,8 +11,9 @@ is presentation-layer glue; ``core/`` is untouched.
 from __future__ import annotations
 
 import re
+import os
 import subprocess
-from typing import Optional
+import threading
 
 from eqspace.core.filterchain.manager import COMMAND_TIMEOUT, FilterChainError, FilterChainManager
 
@@ -26,6 +27,16 @@ class ModuleArgsManager(FilterChainManager):
             raise FilterChainError("filter chain already loaded")
         if "'" in args:
             raise FilterChainError("module args must not contain single quotes")
+        options = {}
+        if re.search(r"type\s*=\s*lv2\b", args):
+            from eqspace.core.filterchain.limiter import lv2_host_directory
+            host = lv2_host_directory()
+            if host is None:
+                raise FilterChainError(
+                    "PipeWire LV2 host is missing. Install the matching "
+                    "libpipewire-module-filter-chain-lv2.so; see docs/lv2-host.md."
+                )
+            options["env"] = dict(os.environ, PIPEWIRE_MODULE_DIR=str(host))
         process = self._popen(
             ["pw-cli"],
             stdin=subprocess.PIPE,
@@ -33,6 +44,7 @@ class ModuleArgsManager(FilterChainManager):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            **options,
         )
         try:
             self._read_until_prompt(process, timeout)
@@ -53,9 +65,17 @@ class ModuleArgsManager(FilterChainManager):
             )
         self._module_id = int(match.group(1))
         self._process = process
+        self._output_thread = threading.Thread(
+            target=self._drain_output,
+            args=(process,),
+            name="eqspace-moduleargs-output",
+            daemon=True,
+        )
+        self._output_thread.start()
         return self._module_id
 
     def update_args(self, args: str, timeout: float = COMMAND_TIMEOUT) -> int:
         """Reload with new args (unload + load)."""
-        self.unload(timeout=timeout)
+        if self.is_loaded:
+            self.unload(timeout=timeout)
         return self.load_args(args, timeout=timeout)

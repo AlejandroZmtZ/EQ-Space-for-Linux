@@ -186,7 +186,13 @@ class PresetsWidget(QWidget):
         if not ok or not profile_name:
             return
         try:
-            saved = profile.model_copy(update={"name": profile_name})
+            active_spatial = getattr(self, "current_spatial_enabled", lambda: False)()
+            spatial_state = getattr(self, "current_spatial_state", lambda: {})()
+            limiter_enabled = getattr(self, "current_limiter_enabled", lambda: False)()
+            saved = profile.model_copy(update={"name": profile_name,
+                                               "spatial": spatial_state,
+                                               "spatial_enabled": active_spatial,
+                                               "limiter_enabled": limiter_enabled})
             storage.save_profile(saved)
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")

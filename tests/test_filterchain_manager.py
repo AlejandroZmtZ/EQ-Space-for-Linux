@@ -399,3 +399,57 @@ def test_live_update_supported_false_on_failure():
         runner=failing,
     )
     assert manager.live_update_supported(registry=registry) is False
+
+
+def test_module_args_manager_loads_and_starts_output_thread():
+    from eqspace.ui.module_args_manager import ModuleArgsManager
+
+    proc = FakePwCli("1 = @module:88\npipewire-0>> ")
+    manager = ModuleArgsManager(popen=fake_popen(proc))
+    args = "node.description = \"Test\" media.name = \"Test\""
+    mod_id = manager.load_args(args)
+    assert mod_id == 88
+    assert manager.is_loaded
+    assert manager._output_thread is not None
+    assert manager._output_thread.is_alive()
+
+    # Verify background draining works without blocking
+    os.set_blocking(proc._write_fd, False)
+    payload = b"event chunk\n" * 1024
+    written = 0
+    deadline = time.monotonic() + 1.0
+    while written < len(payload) and time.monotonic() < deadline:
+        try:
+            written += os.write(proc._write_fd, payload[written:])
+        except BlockingIOError:
+            time.sleep(0.001)
+    assert written == len(payload)
+
+    manager.unload()
+    assert not manager.is_loaded
+    assert manager._output_thread is None
+
+
+def test_module_args_manager_update_args_transitions_cleanly():
+    from eqspace.ui.module_args_manager import ModuleArgsManager
+
+    proc1 = FakePwCli("1 = @module:88\npipewire-0>> ")
+    proc2 = FakePwCli("1 = @module:99\npipewire-0>> ")
+    procs = [proc1, proc2]
+
+    def popen_multi(cmd, **kwargs):
+        return procs.pop(0)
+
+    manager = ModuleArgsManager(popen=popen_multi)
+    manager.load_args("node.description = \"V1\"")
+    assert manager._module_id == 88
+
+    # update_args should unload first and load second
+    mod_id = manager.update_args("node.description = \"V2\"")
+    assert mod_id == 99
+    assert manager._module_id == 99
+    assert proc1.commands[-1] == "destroy 88\nquit\n"
+    assert proc1.wait_calls == 1
+
+    manager.unload()
+    assert not manager.is_loaded

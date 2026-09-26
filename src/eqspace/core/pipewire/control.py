@@ -149,6 +149,96 @@ def connected_filter_output(
     return sorted(shared)[0] if shared else None
 
 
+def link_filter_output(
+    filter_node_name: str,
+    target_sink_name: str,
+    runner: Optional[Runner] = None,
+    timeout: float = COMMAND_TIMEOUT,
+) -> None:
+    """Verify both replacement channels before retiring the existing route.
+
+    A failed command can have taken effect, so rollback inspects fresh links
+    and removes only destinations that were absent before this attempt.
+    """
+    links = get_active_output_links(runner=runner, timeout=timeout)
+    additions: list[tuple[str, str]] = []
+    removals: list[tuple[str, str]] = []
+    targets = [
+        (f"{filter_node_name}.playback:output_{channel}",
+         f"{target_sink_name}:playback_{channel}")
+        for channel in ("FL", "FR")
+    ]
+    try:
+        for source, target in targets:
+            destinations = links.get(source, [])
+            if target not in destinations:
+                additions.append((source, target))
+                _run(["pw-link", source, target], runner, timeout)
+            removals.extend((source, dst) for dst in destinations if dst != target)
+
+        observed = get_active_output_links(runner=runner, timeout=timeout)
+        for source, target in targets:
+            if target not in observed.get(source, []):
+                raise PipeWireControlError(f"unverified {source} -> {target}")
+    except PipeWireControlError as exc:
+        try:
+            observed = get_active_output_links(runner=runner, timeout=timeout)
+            for source, target in additions:
+                if target in observed.get(source, []):
+                    _run(["pw-link", "-d", source, target], runner, timeout)
+            restored = get_active_output_links(runner=runner, timeout=timeout)
+            for source, target in additions:
+                if target in restored.get(source, []):
+                    raise PipeWireControlError(f"unverified rollback for {source}")
+        except PipeWireControlError as rollback_error:
+            raise PipeWireControlError(
+                f"{exc}; output-link rollback failed: {rollback_error}"
+            ) from exc
+        raise
+
+    for source, destination in removals:
+        _run(["pw-link", "-d", source, destination], runner, timeout)
+    verify_filter_output(filter_node_name, target_sink_name, runner=runner, timeout=timeout)
+
+
+def verify_filter_output(
+    filter_node_name: str,
+    target_sink_name: str,
+    runner: Optional[Runner] = None,
+    timeout: float = COMMAND_TIMEOUT,
+) -> None:
+    """Require both playback channels to have exactly the requested destination."""
+    links = get_active_output_links(runner=runner, timeout=timeout)
+    for channel in ("FL", "FR"):
+        source = f"{filter_node_name}.playback:output_{channel}"
+        target = f"{target_sink_name}:playback_{channel}"
+        if links.get(source) != [target]:
+            raise PipeWireControlError(f"unverified {source} -> {target}: {links.get(source, [])}")
+
+
+def verify_playback_route(
+    filter_node_name: str,
+    registry: PipeWireRegistry,
+    runner: Optional[Runner] = None,
+    timeout: float = COMMAND_TIMEOUT,
+) -> None:
+    """Check the default and every linked channel of active application streams."""
+    if not is_system_routed(filter_node_name, runner=runner, registry=registry, timeout=timeout):
+        raise PipeWireControlError(f"default route to {filter_node_name} is unverified")
+    links = get_active_output_links(runner=runner, timeout=timeout)
+    for stream in registry.snapshot().streams:
+        if ("Output" not in stream.media_class or not stream.name or
+            stream.name.startswith("eqspace.") or stream.name.endswith(".playback")):
+            continue
+        ports = {port: destinations for port, destinations in links.items()
+                 if port.startswith(f"{stream.name}:output_")}
+        if not ports:
+            continue  # stopped or still initializing; only active playback links are in scope
+        for port, destinations in ports.items():
+            if not destinations or any(not dst.startswith(f"{filter_node_name}:") for dst in destinations):
+                raise PipeWireControlError(f"unverified playback route for {port}: {destinations}")
+
+
 def relink_stream_ports(
     stream_name: str,
     target_sink_name: str,
@@ -163,6 +253,7 @@ def relink_stream_ports(
     active_links = get_active_output_links(runner=runner, timeout=timeout)
     additions: list[tuple[str, str]] = []
     removals: list[tuple[str, str]] = []
+    input_ports = set(_run(["pw-link", "-i"], runner, timeout).splitlines())
 
     for src_port, dest_ports in active_links.items():
         if ":" not in src_port:
@@ -171,7 +262,11 @@ def relink_stream_ports(
         if port_node != stream_name and not stream_name.startswith(port_node):
             continue
 
-        if "FR" in port_channel or "right" in port_channel.lower() or port_channel == "1":
+        channel = port_channel.removeprefix("output_")
+        exact_input = f"{target_sink_name}:playback_{channel}"
+        if exact_input in input_ports:
+            target_in = exact_input
+        elif channel in ("FR", "SR", "RR") or "right" in port_channel.lower() or port_channel == "1":
             target_in = f"{target_sink_name}:playback_FR"
         else:
             target_in = f"{target_sink_name}:playback_FL"
@@ -191,6 +286,18 @@ def relink_stream_ports(
 
     for src_port, dst in removals:
         _run(["pw-link", "-d", src_port, dst], runner, timeout)
+
+    # If stream had 0 active links (e.g. disconnected after previous sink was destroyed),
+    # explicitly connect its channels to the target sink
+    if not additions and not any(src.split(":", 1)[0] == stream_name or stream_name.startswith(src.split(":", 1)[0]) for src in active_links):
+        for ch in ("FL", "FR"):
+            src_port = f"{stream_name}:output_{ch}"
+            target_in = f"{target_sink_name}:playback_{ch}"
+            try:
+                _run(["pw-link", src_port, target_in], runner, timeout)
+                additions.append((src_port, target_in))
+            except PipeWireControlError:
+                pass
 
     return bool(additions or removals)
 
@@ -236,6 +343,23 @@ def move_stream(
         if stream_node is not None and sink_node is not None:
             if stream_node.name and sink_node.name:
                 relink_stream_ports(stream_node.name, sink_node.name, runner=runner, timeout=timeout)
+
+
+def _move_observed_stream(stream, target: str, registry: PipeWireRegistry,
+                          runner: Optional[Runner], timeout: float) -> None:
+    """Resolve the current stream by name; a vanished playback stream needs no move."""
+    links = get_active_output_links(runner=runner, timeout=timeout)
+    if not any(port.startswith(f"{stream.name}:output_") for port in links):
+        return
+    try:
+        move_stream(stream.name, target, runner=runner, timeout=timeout, registry=registry)
+    except PipeWireControlError as exc:
+        live_links = get_active_output_links(runner=runner, timeout=timeout)
+        if "no such stream node" in str(exc) and not any(
+            port.startswith(f"{stream.name}:output_") for port in live_links
+        ):
+            return
+        raise
 
 
 def get_default_sink_name(
@@ -306,6 +430,7 @@ def set_system_routing(
     registry: Optional[PipeWireRegistry] = None,
     runner: Optional[Runner] = None,
     timeout: float = COMMAND_TIMEOUT,
+    output_sink_name: Optional[str] = None,
 ) -> bool:
     """Route system audio through EQ-Space (enable=True) or restore direct physical sink (enable=False)."""
     global _last_physical_sink_name
@@ -329,16 +454,31 @@ def set_system_routing(
                 raise PipeWireControlError(
                     f"Listening device '{fallback_sink_name}' is unavailable; direct output was kept"
                 )
+            if output_sink_name and not any(s.name == output_sink_name for s in snapshot.sinks):
+                raise PipeWireControlError(f"output stage '{output_sink_name}' is unavailable")
+            target_name = output_sink_name or fallback_sink_name or _last_physical_sink_name
+            if not output_sink_name and target_name and target_name not in physical_names:
+                target_name = next(
+                    (s.name for s in snapshot.sinks if s.name in physical_names and (s.description == target_name or str(s.id) == target_name)),
+                    None,
+                )
+            if not output_sink_name and (not target_name or target_name not in physical_names):
+                target_name = next(
+                    (s.name for s in snapshot.sinks if s.name in physical_names and "bluez" in s.name.lower()),
+                    None,
+                ) or next((s.name for s in snapshot.sinks if s.name in physical_names), None)
+            if target_name:
+                link_filter_output(filter_node_name, target_name, runner=runner, timeout=timeout)
             deadline = time.monotonic() + 2.0
             while True:
-                connected = connected_filter_output(
-                    filter_node_name, physical_names, runner=runner, timeout=1.0
-                )
-                if connected and (not fallback_sink_name or connected == fallback_sink_name):
+                try:
+                    verify_filter_output(filter_node_name, target_name, runner=runner, timeout=1.0)
                     break
+                except PipeWireControlError:
+                    pass
                 if time.monotonic() >= deadline:
                     raise PipeWireControlError(
-                        "EQ output is not connected to the selected listening device; direct output was kept"
+                        f"filter output to {target_name} could not be verified; previous route was kept"
                     )
                 time.sleep(0.1)
         # Remember current physical sink before switching to EQ-Space
@@ -355,24 +495,31 @@ def set_system_routing(
         if current and not current_is_filter:
             for s in snapshot.sinks:
                 if str(s.id) == str(current) or s.description == current or s.name == current:
-                    _last_physical_sink_name = s.name
+                    if not s.name.startswith("eqspace."):
+                        _last_physical_sink_name = s.name
                     break
             else:
-                _last_physical_sink_name = current
+                if not current.startswith("eqspace."):
+                    _last_physical_sink_name = current
         set_default_sink(filter_node_name, registry=registry, runner=runner, timeout=timeout)
         # Relink active playback streams to the filter sink immediately
         if runner is None or not hasattr(runner, "calls"):
+            move_failures = []
             for stream in snapshot.streams:
                 if stream.name and (
+                    "Output" not in stream.media_class
+                    or
                     stream.name.startswith("eqspace.")
                     or stream.name.endswith(".playback")
                     or "monitor" in stream.name.lower()
                 ):
                     continue
                 try:
-                    move_stream(stream.id, filter_node_name, runner=runner, timeout=timeout, registry=registry)
-                except Exception:
-                    pass
+                    _move_observed_stream(stream, filter_node_name, registry, runner, timeout)
+                except Exception as exc:
+                    move_failures.append(f"{stream.name}: {exc}")
+            if move_failures:
+                raise PipeWireControlError("playback move failed: " + "; ".join(move_failures))
         return True
     else:
         # Determine best physical fallback sink
@@ -410,17 +557,22 @@ def set_system_routing(
                     )
             set_default_sink(fallback.name, registry=registry, runner=runner, timeout=timeout)
             if live_links:
+                move_failures = []
                 for stream in snapshot.streams:
                     if stream.name and (
+                        "Output" not in stream.media_class
+                        or
                         stream.name.startswith("eqspace.")
                         or stream.name.endswith(".playback")
                         or "monitor" in stream.name.lower()
                     ):
                         continue
                     try:
-                        move_stream(stream.id, fallback.name, runner=runner, timeout=timeout, registry=registry)
-                    except Exception:
-                        pass
+                        _move_observed_stream(stream, fallback.name, registry, runner, timeout)
+                    except Exception as exc:
+                        move_failures.append(f"{stream.name}: {exc}")
+                if move_failures:
+                    raise PipeWireControlError("direct playback move failed: " + "; ".join(move_failures))
                 if formerly_eq_ports:
                     after_links = get_active_output_links(runner=runner, timeout=timeout)
                     active_names = {stream.name for stream in registry.snapshot().streams}
@@ -453,7 +605,9 @@ def is_system_routed(
         return False
     if sink_name == filter_node_name:
         return True
-    if sink_name.lower() in ("eqspace.filter-chain", "eq-space filter chain"):
+    if filter_node_name == "eqspace.filter-chain" and sink_name.lower() in (
+        "eqspace.filter-chain", "eq-space filter chain"
+    ):
         return True
     if registry is not None:
         try:

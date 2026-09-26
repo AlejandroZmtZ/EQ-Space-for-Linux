@@ -10,11 +10,11 @@ import os
 import tempfile
 from pathlib import Path
 
-from eqspace.core.profiles.models import EQProfile
+from eqspace.core.profiles.models import EQProfile, SCHEMA_VERSION
 
 
 def _current(profile: EQProfile) -> EQProfile:
-    return profile.model_copy(update={"version": 2})
+    return profile.model_copy(update={"version": SCHEMA_VERSION})
 
 
 def profiles_dir() -> Path:

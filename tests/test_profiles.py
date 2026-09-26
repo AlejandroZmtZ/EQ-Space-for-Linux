@@ -47,6 +47,8 @@ class TestEQProfile:
         assert profile.mic == {}
         assert profile.output_device is None
         assert profile.volume == 1.0
+        assert profile.spatial_enabled is False
+        assert profile.automatic_headroom is True
 
     def test_json_round_trip(self):
         profile = self._sample()
@@ -134,3 +136,22 @@ class TestStorage:
         storage.save_profile(self._profile("raw"))
         raw = json.loads((storage.profiles_dir() / "raw.json").read_text())
         assert models.EQProfile.model_validate(raw).name == "raw"
+
+    def test_v2_migration_keeps_manual_gain_and_unspecified_spatial(self, xdg):
+        path = storage.profiles_dir() / "legacy.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"name": "legacy", "version": 2,
+                                    "preamp_db": -4.5, "spatial": {"layout": "7.1"}}))
+        loaded = storage.load_profile("legacy")
+        assert loaded.version == 3
+        assert loaded.preamp_db == -4.5
+        assert loaded.automatic_headroom is False
+        assert loaded.spatial_enabled is None
+        storage.save_profile(loaded)
+        raw = json.loads(path.read_text())
+        assert raw["version"] == 3 and raw["automatic_headroom"] is False
+
+    def test_new_profile_defaults_to_static_headroom(self, xdg):
+        profile = models.EQProfile.from_bands("new", [])
+        assert profile.automatic_headroom is True
+        assert profile.spatial_enabled is False

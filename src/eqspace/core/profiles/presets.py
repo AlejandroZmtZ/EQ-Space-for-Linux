@@ -35,8 +35,10 @@ class Preset(BaseModel):
             name=self.name,
             bands=self.bands,
             spatial=self.spatial,
+            spatial_enabled=None,
             mic=self.mic,
             volume=self.volume,
+            automatic_headroom=True,
         )
 
 

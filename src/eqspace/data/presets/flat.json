@@ -1,0 +1,9 @@
+{
+  "name": "flat",
+  "description": "Neutral EQ with 0 dB manual preamp and no bands.",
+  "research_basis": "Unity gain reference; automatic trim applies only when another active stage adds positive estimated gain.",
+  "bands": [],
+  "spatial": {},
+  "mic": {},
+  "volume": 1.0
+}

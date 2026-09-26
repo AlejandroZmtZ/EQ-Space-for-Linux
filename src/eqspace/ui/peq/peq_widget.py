@@ -107,6 +107,7 @@ class PeqWidget(QWidget):
     # list of EQBand when the user clicks "Save as profile".
     save_profile_requested = Signal(list)
     apply_completed = Signal(bool)
+    settings_edited = Signal()
     _worker_result = Signal(bool, str)
 
     def __init__(
@@ -119,6 +120,8 @@ class PeqWidget(QWidget):
         self.manager = manager
         self.fs = fs
         self.preamp_db = 0.0
+        self.auto_trim_db = 0.0
+        self.spatial_peak_db = 0.0
         self.bands: list[EQBand] = [
             EQBand(band_type="peaking", freq_hz=1000.0, gain_db=0.0, q=1.0)
         ]
@@ -162,11 +165,22 @@ class PeqWidget(QWidget):
         self.preamp_spin = QDoubleSpinBox()
         self.preamp_spin.setRange(-24.0, 12.0)
         self.preamp_spin.setSingleStep(0.5)
+        self.preamp_spin.setToolTip(
+            "Manual gain: click Apply. With LSP enabled, positive gain drives the limiter "
+            "for more volume; without LSP, automatic headroom reserves boosted peaks."
+        )
         self.preamp_spin.valueChanged.connect(self.set_preamp)
         preamp_row.addWidget(self.preamp_spin)
         self.peak_label = QLabel("")
         preamp_row.addWidget(self.peak_label, stretch=1)
         layout.addLayout(preamp_row)
+
+        self.limiter_check = QCheckBox("LSP Limiter Stereo · true peak ceiling −1 dBTP")
+        self.limiter_check.setEnabled(False)
+        self.limiter_check.setToolTip("Install LSP Limiter Stereo LV2 with true-peak support to enable this stage")
+        layout.addWidget(self.limiter_check)
+        self.limiter_latency_label = QLabel("Limiter off")
+        layout.addWidget(self.limiter_latency_label)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Type", "Freq (Hz)", "Gain (dB)", "Q", "Enabled"])
@@ -213,6 +227,7 @@ class PeqWidget(QWidget):
         self.bands.append(EQBand(band_type="peaking", freq_hz=1000.0, gain_db=0.0, q=1.0))
         self._refresh_table()
         self.update_curve()
+        self.settings_edited.emit()
 
     def remove_selected_band(self) -> None:
         row = self.table.currentRow()
@@ -222,12 +237,16 @@ class PeqWidget(QWidget):
             del self.bands[row]
             self._refresh_table()
             self.update_curve()
+            self.settings_edited.emit()
 
     def set_band(self, index: int, **changes) -> None:
         band = replace(self.bands[index], **changes)
         self.bands[index] = band
         self._update_row(index)
         self.update_curve()
+        if self._apply_worker is None and self.peak_label.text() != "Response unavailable":
+            self.status_label.setText("Preview changed — click Apply to update sound")
+        self.settings_edited.emit()
 
     def set_preamp(self, value: float) -> None:
         if not math.isfinite(value) or not -24 <= value <= 12:
@@ -247,7 +266,7 @@ class PeqWidget(QWidget):
         freqs = np.logspace(np.log10(F_MIN), np.log10(min(F_MAX, self.fs / 2 * 0.999)), 512)
         try:
             coeffs = design_filters(self.bands, self.fs)
-            db = magnitude_response(coeffs, freqs, self.fs) + self.preamp_db
+            db = magnitude_response(coeffs, freqs, self.fs) + self.preamp_db + self.auto_trim_db
         except ValueError as exc:
             self.curve_item.setData([], [])
             self.peak_label.setText("Response unavailable")
@@ -255,9 +274,10 @@ class PeqWidget(QWidget):
             return
         self.curve_item.setData(np.log10(freqs), np.clip(db, -GAIN_LIMIT, GAIN_LIMIT))
         peak = float(np.max(db))
-        suggested = -max(0.0, peak - self.preamp_db)
+        peak_kind = "Estimated pre-limiter peak" if self.limiter_check.isChecked() else "Estimated combined peak"
         self.peak_label.setText(
-            f"Estimated peak: {peak:+.1f} dB · Suggested preamp: {suggested if suggested else 0.0:.1f} dB"
+            f"Manual: {self.preamp_db:+.1f} dB · Auto trim: {self.auto_trim_db:+.1f} dB · "
+            f"{peak_kind}: {peak + self.spatial_peak_db:+.1f} dB"
         )
         self.handles.setData(
             x=[float(np.log10(b.freq_hz)) for b in self.bands],
@@ -343,7 +363,7 @@ class PeqWidget(QWidget):
     # ---- apply -----------------------------------------------------------
 
     def _filter_specs(self) -> list[FilterSpec]:
-        specs = [FilterSpec(name="preamp", filter_type="linear", params={"Mult": 10 ** (self.preamp_db / 20), "Add": 0.0})]
+        specs = [FilterSpec(name="preamp", filter_type="linear", params={"Mult": 10 ** ((self.preamp_db + self.auto_trim_db) / 20), "Add": 0.0})]
         for i, band in enumerate(self.bands):
             if not band.enabled:
                 continue
@@ -368,11 +388,6 @@ class PeqWidget(QWidget):
                 on_done(False, "No filter-chain manager configured")
             return False
         if self._apply_worker is not None:
-            return False
-        if not any(b.enabled for b in self.bands):
-            self.status_label.setText("Apply failed: no enabled EQ bands")
-            if on_done:
-                on_done(False, "no enabled EQ bands")
             return False
         try:
             design_filters(self.bands, self.fs)

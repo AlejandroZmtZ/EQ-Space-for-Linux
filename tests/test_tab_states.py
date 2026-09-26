@@ -29,7 +29,7 @@ class TestSpatialWidgetState:
         assert "wet" in state
         assert "crossfeed" in state
         assert "sofa_path" in state
-        assert state["layout"] == "Stereo"
+        assert state["layout"] == "HoloSpace 3D"
         assert state["wet"] == 100
         assert state["crossfeed"] is False
         assert state["sofa_path"] == str(sofa_file)
@@ -55,7 +55,7 @@ class TestSpatialWidgetState:
         widget = SpatialWidget(hrtf_dir=tmp_path, pysofa_available=lambda: False)
         widget.set_state({"wet": 30})
         assert widget.wetdry_slider.value() == 30
-        assert widget.layout_combo.currentText() == "Stereo"
+        assert widget.layout_combo.currentText() == "HoloSpace 3D"
 
 
 class TestMicWidgetState:

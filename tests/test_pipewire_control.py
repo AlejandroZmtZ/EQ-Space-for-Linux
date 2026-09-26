@@ -10,6 +10,7 @@ from eqspace.core.pipewire.control import (
     get_default_sink_name,
     get_volume,
     is_system_routed,
+    link_filter_output,
     move_stream,
     relink_stream_ports,
     set_default_sink,
@@ -373,15 +374,15 @@ def test_is_system_routed_false_on_runner_error():
 def test_get_active_output_links_parses_pw_link_output():
     output = """
 Brave:output_FL
-  |-> bluez_output.84_D3_52_75_6B_51.1:playback_FL
+  |-> bluez_output.00_11_22_33_44_55.1:playback_FL
 Brave:output_FR
-  |-> bluez_output.84_D3_52_75_6B_51.1:playback_FR
+  |-> bluez_output.00_11_22_33_44_55.1:playback_FR
 """
     rec = Recorder(output)
     links = get_active_output_links(runner=rec)
     assert links == {
-        "Brave:output_FL": ["bluez_output.84_D3_52_75_6B_51.1:playback_FL"],
-        "Brave:output_FR": ["bluez_output.84_D3_52_75_6B_51.1:playback_FR"],
+        "Brave:output_FL": ["bluez_output.00_11_22_33_44_55.1:playback_FL"],
+        "Brave:output_FR": ["bluez_output.00_11_22_33_44_55.1:playback_FR"],
     }
     assert rec.calls[0][0] == ["pw-link", "-l"]
 
@@ -426,7 +427,7 @@ def test_routing_rejects_disconnected_eq_before_changing_default(monkeypatch):
         return ""
     ticks = iter([0.0, 3.0])
     monkeypatch.setattr(control.time, "monotonic", lambda: next(ticks))
-    with pytest.raises(PipeWireControlError, match="direct output was kept"):
+    with pytest.raises(PipeWireControlError, match="unverified"):
         set_system_routing(True, registry=reg, runner=runner)
     assert not any(cmd[:2] == ["wpctl", "set-default"] for cmd in calls)
 
@@ -434,9 +435,9 @@ def test_routing_rejects_disconnected_eq_before_changing_default(monkeypatch):
 def test_relink_stream_ports_disconnects_and_reconnects():
     pw_link_l = """
 Brave:output_FL
-  |-> bluez_output.84_D3_52_75_6B_51.1:playback_FL
+  |-> bluez_output.00_11_22_33_44_55.1:playback_FL
 Brave:output_FR
-  |-> bluez_output.84_D3_52_75_6B_51.1:playback_FR
+  |-> bluez_output.00_11_22_33_44_55.1:playback_FR
 """
     calls = []
 
@@ -448,8 +449,8 @@ Brave:output_FR
 
     result = relink_stream_ports("Brave", "eqspace.filter-chain", runner=runner)
     assert result is True
-    assert ["pw-link", "-d", "Brave:output_FL", "bluez_output.84_D3_52_75_6B_51.1:playback_FL"] in calls
-    assert ["pw-link", "-d", "Brave:output_FR", "bluez_output.84_D3_52_75_6B_51.1:playback_FR"] in calls
+    assert ["pw-link", "-d", "Brave:output_FL", "bluez_output.00_11_22_33_44_55.1:playback_FL"] in calls
+    assert ["pw-link", "-d", "Brave:output_FR", "bluez_output.00_11_22_33_44_55.1:playback_FR"] in calls
     assert ["pw-link", "Brave:output_FL", "eqspace.filter-chain:playback_FL"] in calls
     assert ["pw-link", "Brave:output_FR", "eqspace.filter-chain:playback_FR"] in calls
     additions = [i for i, cmd in enumerate(calls) if cmd[:1] == ["pw-link"] and len(cmd) == 3 and cmd[1] != "-d"]
@@ -479,3 +480,167 @@ Brave:output_FR
     assert ["pw-link", "Brave:output_FL", "eqspace.filter-chain:playback_FL"] in calls
     assert ["pw-link", "-d", "Brave:output_FL", "eqspace.filter-chain:playback_FL"] in calls
     assert not any(cmd[:2] == ["pw-link", "-d"] and "bluez_output" in cmd[-1] for cmd in calls)
+
+
+class FilterLinkRunner:
+    def __init__(self, old_sink=None, fail_channel=None, omit_channel=None, fail_removal=False):
+        self.links = {
+            f"eqspace.filter-chain.playback:output_{ch}":
+            [f"{old_sink}:playback_{ch}"] if old_sink else []
+            for ch in ("FL", "FR")
+        }
+        self.calls = []
+        self.fail_channel = fail_channel
+        self.omit_channel = omit_channel
+        self.fail_removal = fail_removal
+
+    def __call__(self, cmd, timeout):
+        self.calls.append(list(cmd))
+        if cmd == ["pw-link", "-l"]:
+            return "\n".join(src + "\n" + "\n".join(f"  |-> {dst}" for dst in dsts)
+                             for src, dsts in self.links.items())
+        if cmd[:2] == ["pw-link", "-d"]:
+            if self.fail_removal:
+                raise RuntimeError("unlink failed")
+            self.links[cmd[2]].remove(cmd[3])
+        elif len(cmd) == 3:
+            if cmd[1].endswith(self.fail_channel or "never"):
+                raise RuntimeError("port unavailable")
+            if not cmd[1].endswith(self.omit_channel or "never"):
+                self.links[cmd[1]].append(cmd[2])
+        return ""
+
+
+def test_link_filter_output_links_both_channels_when_unconnected():
+    runner = FilterLinkRunner()
+    link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert all(dsts == [f"new_sink:playback_{ch}"]
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_verifies_both_channels_before_removing_old_destinations():
+    runner = FilterLinkRunner(old_sink="old_sink")
+    link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    first_removal = next(i for i, cmd in enumerate(runner.calls) if cmd[:2] == ["pw-link", "-d"])
+    assert runner.calls[first_removal - 1] == ["pw-link", "-l"]
+    assert ["pw-link", "eqspace.filter-chain.playback:output_FR", "new_sink:playback_FR"] in runner.calls[:first_removal]
+    assert all(dsts == [f"new_sink:playback_{ch}"]
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_ignores_already_connected_target():
+    runner = FilterLinkRunner(old_sink="target_sink")
+    link_filter_output("eqspace.filter-chain", "target_sink", runner=runner)
+    assert not any(len(cmd) > 2 for cmd in runner.calls)
+
+
+@pytest.mark.parametrize("channel", ["FL", "FR"])
+def test_link_filter_output_failed_addition_preserves_old_channels(channel):
+    runner = FilterLinkRunner(old_sink="old_sink", fail_channel=channel)
+    with pytest.raises(PipeWireControlError, match="port unavailable"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert all(dsts == [f"old_sink:playback_{ch}"]
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_missing_added_channel_preserves_old_channels():
+    runner = FilterLinkRunner(old_sink="old_sink", omit_channel="FR")
+    with pytest.raises(PipeWireControlError, match="unverified"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert all(dsts == [f"old_sink:playback_{ch}"]
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_failed_rollback_reports_unverified_state():
+    runner = FilterLinkRunner(old_sink="old_sink", fail_channel="FR", fail_removal=True)
+    with pytest.raises(PipeWireControlError, match="rollback.*failed"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert all(f"old_sink:playback_{ch}" in dsts
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_command_failure_after_effect_rolls_back_new_links():
+    runner = FilterLinkRunner(old_sink="old_sink")
+    def after_effect(cmd, timeout):
+        output = runner(cmd, timeout)
+        if len(cmd) == 3 and cmd[1].endswith("FR"):
+            raise RuntimeError("timeout after linking")
+        return output
+    with pytest.raises(PipeWireControlError, match="timeout after linking"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=after_effect)
+    assert all(dsts == [f"old_sink:playback_{ch}"]
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_rollback_keeps_preexisting_target_link():
+    runner = FilterLinkRunner(old_sink="old_sink", fail_channel="FR")
+    runner.links["eqspace.filter-chain.playback:output_FL"].append("new_sink:playback_FL")
+    with pytest.raises(PipeWireControlError, match="port unavailable"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert runner.links["eqspace.filter-chain.playback:output_FL"] == [
+        "old_sink:playback_FL", "new_sink:playback_FL"]
+
+
+def test_link_filter_output_old_destination_removal_failure_is_reported():
+    runner = FilterLinkRunner(old_sink="old_sink", fail_removal=True)
+    with pytest.raises(PipeWireControlError, match="unlink failed"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=runner)
+    assert all(f"new_sink:playback_{ch}" in dsts
+               for ch, dsts in zip(("FL", "FR"), runner.links.values()))
+
+
+def test_link_filter_output_snapshot_failure_prevents_mutation():
+    runner = Recorder()
+    def failing_snapshot(cmd, timeout):
+        runner(cmd, timeout)
+        raise RuntimeError("snapshot unavailable")
+    with pytest.raises(PipeWireControlError, match="snapshot unavailable"):
+        link_filter_output("eqspace.filter-chain", "new_sink", runner=failing_snapshot)
+    assert len(runner.calls) == 1
+
+
+def test_set_system_routing_enable_links_target_output():
+    reg = MockRegistry([
+        PwNode(48, "alsa_output.pci", "Built-in Audio", "Audio/Sink", 1.0, False),
+        PwNode(95, "eqspace.filter-chain", "EQ-Space", "Audio/Sink", 1.0, False),
+    ])
+    links = {}
+    calls = []
+
+    def runner(cmd, timeout):
+        calls.append(list(cmd))
+        if cmd == ["pw-link", "-l"]:
+            lines = []
+            for src, dsts in links.items():
+                lines.append(src)
+                for dst in dsts:
+                    lines.append(f"  |-> {dst}")
+            return "\n".join(lines)
+        if cmd[0] == "pw-link" and len(cmd) == 3:
+            links.setdefault(cmd[1], []).append(cmd[2])
+            return ""
+        if cmd[:2] == ["wpctl", "status"]:
+            return "Audio\n ├─ Sinks:\n │  *   48. alsa_output.pci\n"
+        return ""
+
+    result = set_system_routing(True, fallback_sink_name="alsa_output.pci", registry=reg, runner=runner)
+    assert result is True
+    assert ["pw-link", "eqspace.filter-chain.playback:output_FL", "alsa_output.pci:playback_FL"] in calls
+    assert ["pw-link", "eqspace.filter-chain.playback:output_FR", "alsa_output.pci:playback_FR"] in calls
+    assert any(cmd[:2] == ["wpctl", "set-default"] and cmd[2] == "95" for cmd in calls)
+
+
+def test_native_surround_relink_preserves_each_channel(monkeypatch):
+    from eqspace.core.pipewire import control
+    channels = ('FL', 'FR', 'FC', 'LFE', 'SL', 'SR', 'RL', 'RR')
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **kwargs:
+                        {f'player:output_{ch}': [f'old:playback_{ch}'] for ch in channels})
+    calls = []
+    def runner(cmd, timeout):
+        calls.append(tuple(cmd))
+        if list(cmd) == ['pw-link', '-i']:
+            return '\n'.join(f'cinema:playback_{ch}' for ch in channels)
+        return ''
+    control.relink_stream_ports('player', 'cinema', runner=runner)
+    for ch in channels:
+        assert ('pw-link', f'player:output_{ch}', f'cinema:playback_{ch}') in calls

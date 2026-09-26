@@ -7,6 +7,7 @@ import scipy.io.wavfile as wav_io
 from eqspace.core.dsp.hrtf import (
     ExtractedIRs,
     HRTFUnavailable,
+    HoloSpaceExtractor,
     PySofaExtractor,
     SPEAKER_AZIMUTHS,
     SyntheticKemarExtractor,
@@ -14,9 +15,13 @@ from eqspace.core.dsp.hrtf import (
     builtin_kemar_path,
     default_cache_dir,
     extract_speaker_irs,
+    generate_holospace_irs,
+    holospace_default_path,
     is_builtin_kemar,
+    is_holospace_default,
     resample_ir,
 )
+
 
 
 class DeltaExtractor:
@@ -180,6 +185,76 @@ def test_synthetic_kemar_extractor():
 def test_extract_speaker_irs_builtin_kemar(tmp_path):
     # Without passing any extractor, extract_speaker_irs should use SyntheticKemarExtractor
     paths = extract_speaker_irs(builtin_kemar_path(), 48000.0, cache_dir=tmp_path / "cache")
+    assert set(paths.keys()) == set(SPEAKER_AZIMUTHS)
+    for az, (left, right) in paths.items():
+        assert left.exists() and right.exists()
+        assert left.suffix == ".wav" and right.suffix == ".wav"
+        _, l_arr = wav_io.read(str(left))
+        _, r_arr = wav_io.read(str(right))
+        assert len(l_arr) > 0 and len(r_arr) > 0
+
+
+def test_holospace_default_path_and_is_builtin():
+    path = holospace_default_path()
+    assert path.is_file()
+    assert is_holospace_default(path)
+    assert not is_holospace_default("holospace_default.sofa")
+    assert not is_holospace_default("/path/to/my_holospace_profile.sofa")
+    assert not is_holospace_default("kemar_default.sofa")
+    assert not is_holospace_default("other.sofa")
+
+
+def test_generate_holospace_irs():
+    import scipy.signal
+
+    irs = generate_holospace_irs(SPEAKER_AZIMUTHS, fs=48000.0, n_samples=512)
+    assert set(irs.keys()) == set(SPEAKER_AZIMUTHS)
+
+    # 0 deg should be symmetric
+    l0, r0 = irs[0.0]
+    assert np.allclose(l0, r0)
+
+    # Azimuth -30 deg: left ear ipsilateral (stronger)
+    lm30, rm30 = irs[-30.0]
+    assert np.max(lm30) > np.max(rm30)
+
+    # Azimuth +30 deg: right ear ipsilateral (stronger)
+    lp30, rp30 = irs[30.0]
+    assert np.max(rp30) > np.max(lp30)
+
+    # Azimuth -90 deg: right ear delayed relative to left ear
+    lm90, rm90 = irs[-90.0]
+    peak_l = np.argmax(np.abs(lm90))
+    peak_r = np.argmax(np.abs(rm90))
+    assert peak_r > peak_l
+    assert (peak_r - peak_l) >= 28
+
+    # Check pinna elevation notch filtering (~7.1 kHz)
+    # The magnitude at 7.1 kHz should be lower than at 1 kHz and 4 kHz
+    freqs, h0 = scipy.signal.freqz(l0, fs=48000.0)
+    mag0_db = 20.0 * np.log10(np.abs(h0) + 1e-12)
+    idx_1k = np.argmin(np.abs(freqs - 1000.0))
+    idx_4k = np.argmin(np.abs(freqs - 4000.0))
+    idx_7k = np.argmin(np.abs(freqs - 7100.0))
+    assert mag0_db[idx_7k] < mag0_db[idx_1k]
+    assert mag0_db[idx_7k] < mag0_db[idx_4k]
+
+    # Check early room reflection presence
+    # Direct peak is at t0 ~ 10 samples, reflection is placed further in the tail
+    assert np.max(np.abs(l0[400:500])) > 0.05
+
+
+def test_holospace_extractor():
+    extractor = HoloSpaceExtractor(fs=48000.0)
+    res = extractor.extract(holospace_default_path(), SPEAKER_AZIMUTHS)
+    assert res.sample_rate == 48000.0
+    assert set(res.irs.keys()) == set(SPEAKER_AZIMUTHS)
+    l, r = res.irs[0.0]
+    assert len(l) == 512 and len(r) == 512
+
+
+def test_extract_speaker_irs_holospace(tmp_path):
+    paths = extract_speaker_irs(holospace_default_path(), 48000.0, cache_dir=tmp_path / "cache")
     assert set(paths.keys()) == set(SPEAKER_AZIMUTHS)
     for az, (left, right) in paths.items():
         assert left.exists() and right.exists()

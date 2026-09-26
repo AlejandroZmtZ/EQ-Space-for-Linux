@@ -10,6 +10,7 @@ from eqspace.core.dsp.target_curves import HARMAN_IE_2019, HARMAN_OE_2018, evalu
 from eqspace.core.profiles import models, presets
 
 EXPECTED_PRESETS = [
+    "flat",
     "harman_over_ear_2018",
     "harman_in_ear_2019",
     "bass_boost",
@@ -26,6 +27,13 @@ GAIN_LIMIT_DB = 15.0
 class TestPresetLibrary:
     def test_all_expected_presets_present(self):
         assert sorted(presets.list_presets()) == sorted(EXPECTED_PRESETS)
+
+    def test_flat_preserves_active_spatial_on_apply(self):
+        flat = presets.load_preset("flat").to_profile()
+        assert flat.bands == []
+        assert flat.preamp_db == 0.0
+        assert flat.spatial_enabled is None
+        assert flat.automatic_headroom is True
 
     @pytest.mark.parametrize("name", EXPECTED_PRESETS)
     def test_metadata_fields(self, name):

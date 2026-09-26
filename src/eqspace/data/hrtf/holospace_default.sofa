@@ -1,0 +1,7 @@
+SOFA (AES69) - EQ-Space HoloSpace 3D Signature Profile
+Type: Synthetic 3D Binaural Spatial Model
+Features: Woodworth Head Shadow, 7.1kHz Pinna Notch, Early Room Reflections
+Head Radius: 0.0875 m
+Speed of Sound: 343.0 m/s
+Available Azimuths: -110, -100, -90, -30, 0, 30, 90, 100, 110 deg
+Default Sampling Rate: 48000 Hz

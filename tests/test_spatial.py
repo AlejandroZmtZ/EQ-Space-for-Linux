@@ -200,3 +200,87 @@ def test_layout_channel_speaker_map_71(tmp_path):
         assert f'"conv_{ch}_R"' in conf
         assert f'"eqspace.spatial.conv_{ch}_L:Out"' in conf
         assert f'"eqspace.spatial.conv_{ch}_R:Out"' in conf
+
+
+def test_layout_channel_speaker_map_holospace_3d(tmp_path):
+    renderer = SpatialChainRenderer()
+    mapping = LAYOUT_CHANNEL_SPEAKER_MAP["HoloSpace 3D"]
+    assert mapping == (
+        ("FL", -30.0),
+        ("FR", 30.0),
+        ("FC", 0.0),
+        ("SL", -100.0),
+        ("SR", 100.0),
+    )
+    speakers = []
+    for ch, az in mapping:
+        l = tmp_path / f"ir_holo_{ch}_L.wav"
+        r = tmp_path / f"ir_holo_{ch}_R.wav"
+        l.write_bytes(b"")
+        r.write_bytes(b"")
+        speakers.append(SpeakerIR(azimuth=az, left_ir=l, right_ir=r, channel=ch))
+
+    channels = LAYOUT_CHANNELS["HoloSpace 3D"]
+    conf = renderer.render_config(speakers, channels=channels)
+    assert 'audio.position = [ FL FR FC SL SR ]' in conf
+    for ch in ("FL", "FR", "FC", "SL", "SR"):
+        assert f'input  = [ "eqspace.spatial:playback_{ch}" ]' in conf
+        assert f'"conv_{ch}_L"' in conf
+        assert f'"conv_{ch}_R"' in conf
+
+
+def test_render_args_stereo_input_5_speaker_virtualization(tmp_path):
+    renderer = SpatialChainRenderer()
+    mapping = LAYOUT_CHANNEL_SPEAKER_MAP["HoloSpace 3D"]
+    speakers = []
+    for ch, az in mapping:
+        l = tmp_path / f"ir_holo_{ch}_L.wav"
+        r = tmp_path / f"ir_holo_{ch}_R.wav"
+        l.write_bytes(b"")
+        r.write_bytes(b"")
+        speakers.append(SpeakerIR(azimuth=az, left_ir=l, right_ir=r, channel=ch))
+
+    # Render with stereo input channels
+    gain = 1.5
+    args = renderer.render_args(speakers, gain=gain, channels=("FL", "FR"))
+
+    # Capture props should have 2 channels (stereo input)
+    assert 'capture.props = { node.name = "eqspace.spatial" media.class = "Audio/Sink" audio.channels = 2 audio.position = [ FL FR ] }' in args
+    # Graph inputs must only have the 2 stereo input ports
+    assert 'inputs = [ "copy_FL:In" "copy_FR:In" ]' in args
+
+    # Center channel should be derived via mix_fc
+    assert 'label = mixer name = "mix_fc"' in args
+    assert '{ output = "copy_FL:Out" input = "mix_fc:In 1" }' in args
+    assert '{ output = "copy_FR:Out" input = "mix_fc:In 2" }' in args
+    assert '{ output = "mix_fc:Out" input = "conv_FC_L:In" }' in args
+
+    # Surround channels should be linked to left/right copy
+    assert '{ output = "copy_FL:Out" input = "conv_SL_L:In" }' in args
+    assert '{ output = "copy_FR:Out" input = "conv_SR_L:In" }' in args
+
+    # All 5 speaker convolvers must exist
+    for ch in ("FL", "FR", "FC", "SL", "SR"):
+        assert f'"conv_{ch}_L"' in args
+        assert f'"conv_{ch}_R"' in args
+
+    # Mixer control should have gain / 5 = 1.5 / 5 = 0.3
+    expected_gain = gain / 5.0
+    assert f'"Gain 1" = {expected_gain:g}' in args
+    assert f'"Gain 5" = {expected_gain:g}' in args
+
+
+def test_render_args_gain_scales_mixer_controls(tmp_path):
+    renderer = SpatialChainRenderer()
+    speakers = [
+        SpeakerIR(azimuth=-30.0, left_ir=tmp_path / "l.wav", right_ir=tmp_path / "r.wav", channel="FL"),
+        SpeakerIR(azimuth=30.0, left_ir=tmp_path / "l.wav", right_ir=tmp_path / "r.wav", channel="FR"),
+    ]
+    args_50 = renderer.render_args(speakers, gain=0.5, channels=("FL", "FR"))
+    args_100 = renderer.render_args(speakers, gain=1.0, channels=("FL", "FR"))
+
+    assert '"Gain 1" = 0.25' in args_50
+    assert '"Gain 2" = 0.25' in args_50
+
+    assert '"Gain 1" = 0.5' in args_100
+    assert '"Gain 2" = 0.5' in args_100

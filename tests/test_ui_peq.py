@@ -145,3 +145,28 @@ def test_apply_when_loaded_uses_reload_if_available(qapp):
     assert len(manager.reloaded) == 1
     assert len(manager.params) == 0
     assert widget.status_label.text() == "Applied ✓"
+
+
+def test_band_edit_marks_preview_without_changing_applied_audio(qapp):
+    widget = _make(qapp)
+    assert widget.apply()
+    widget.set_band(0, freq_hz=3000.0, gain_db=6.0)
+    assert "click Apply" in widget.status_label.text()
+    assert widget.manager.loaded[-1][1].params["Freq"] == 1000.0
+    assert widget.manager.params == []
+
+
+def test_dragged_presence_boost_applies_correct_frequency_and_response(qapp):
+    import numpy as np
+    from eqspace.core.dsp.biquads import magnitude_response
+    from eqspace.core.dsp.filter_design import design_filters
+
+    widget = _make(qapp)
+    widget._on_handle_dragged(0, 3000.0, 6.0)
+    assert widget.apply()
+    spec = widget.manager.loaded[-1][1]
+    assert spec.params == {"Freq": 3000.0, "Gain": 6.0, "Q": 1.0}
+    response = magnitude_response(design_filters(widget.bands, widget.fs), np.array([100., 3000., 10000.]), widget.fs)
+    assert response[1] == pytest.approx(6.0)
+    assert response[0] < 0.1
+    assert response[2] < 1.0

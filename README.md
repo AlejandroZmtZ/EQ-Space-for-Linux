@@ -1,16 +1,18 @@
 # EQ-Space for Linux
 
-EQ-Space is a **GUI-first prototype** for a PipeWire system-wide parametric equalizer. Python builds filter-chain configurations and controls PipeWire; PipeWire performs the audio processing. The main supported flow is selecting one of eight built-in EQ presets and applying it from the Presets tab.
+EQ-Space is a **GUI-first prototype** for a PipeWire system-wide parametric equalizer. Python builds filter-chain configurations and controls PipeWire; PipeWire performs the audio processing. The main flow is selecting a built-in EQ preset and applying it from the Presets tab, with optional Spatial processing before EQ.
 
 ![EQ-Space main window](docs/screenshots/main-window.png)
 
 ## What works
 
 - Parametric EQ with editable bands, a frequency-response graph, and a PipeWire filter chain.
-- Eight built-in EQ presets. Select one to see its description, then click **Apply**. Switching between them updates the running filter controls while keeping the EQ sink connected. The UI reports **Active** after the update and routing succeed.
-- Per-app volume and mute controls, plus one system EQ route and a physical listening-device selector.
-- Local JSON profiles with atomic writes. The GUI loads the last saved profile into the editor at startup; audio changes only after Apply.
-- Experimental Spatial and Mic tabs. Spatial offers crossfeed and a **synthetic KEMAR-style model**; it is not a measured KEMAR SOFA recording. External SOFA files need optional `pysofa`. Mic noise reduction needs the DeepFilterNet LADSPA plugin and capture routing setup. These paths are not part of the verified preset flow.
+- Nine built-in EQ presets, including **Flat** (no EQ bands, 0 dB manual preamp). Select one to see its description, then click **Apply**. Compatible filter layouts update controls in place; changed layouts stage a new sink and verify the route before retiring the old one.
+- Spatial can feed EQ, and **Spatial Off** preserves the active EQ bands and preamp. The Spatial level control changes effect gain; it does not mix in a dry signal. Mic remains an independent experimental path.
+- A separate automatic trim estimates headroom for new profiles and built-in presets. The displayed combined peak is calculated from the EQ response and offline Spatial references, not measured loudness or guaranteed clipping protection.
+- Per-app volume and mute controls, an EQ toggle, and a physical listening-device selector. An optional LSP Limiter Stereo LV2 stage appears only when the installed plugin exposes the required true-peak mode and ports; it is off by default.
+- Local JSON profiles with atomic writes. The GUI loads the last saved profile into the editor at startup; click Apply to activate it. While EQ is active, graph, band and preamp edits update sound automatically after a 180 ms pause, using verified Apply and headroom. Edits while EQ is bypassed remain in the editor until Apply.
+- Spatial offers crossfeed and a **synthetic KEMAR-style model**; it is not a measured KEMAR SOFA recording. External SOFA files need optional `pysofa`. Mic noise reduction needs the DeepFilterNet LADSPA plugin and capture routing setup.
 
 ## Requirements
 
@@ -28,7 +30,7 @@ python3.12 -m venv .venv
 .venv/bin/eqspace
 ```
 
-Use the Mixer tab to choose a physical listening device. Start audio playback, open **Presets**, select an EQ preset, and click **Apply**. Mixer then shows whether EQ is on. Use **Use direct output** to bypass EQ; the listening device can be changed while EQ is off. If the status says an app is on another device or not using EQ, that app's current audio link did not follow the chosen route. Application rows control volume and mute. Quit from the window or tray to restore direct output. The desktop launcher source is in `data/desktop/eqspace.desktop`; install that and the icon separately if you want an application-menu entry. The wheel includes the icon used by the tray.
+Use the Mixer tab to choose a physical listening device. Start audio playback, open **Presets**, select an EQ preset, and click **Apply**. Mixer then shows whether EQ is on. Open Spatial and click **Apply Spatial Audio** to place it before EQ; **Spatial Off** returns to EQ alone. **Turn off EQ** keeps Spatial active if it is on. If the status says an app is on another device or not using EQ, that app's current audio link did not follow the chosen route. Application rows control volume and mute. Quit from the window or tray to restore direct output. The desktop launcher source is in `data/desktop/eqspace.desktop`; install that and the icon separately if you want an application-menu entry. The wheel includes the icon used by the tray.
 
 ![Mixer with a physical listening device and one EQ route](docs/screenshots/mixer.png)
 
@@ -41,9 +43,9 @@ The only command-line operation is read-only:
 ## Troubleshooting
 
 - **Apply failed / PipeWire unavailable:** run `pw-cli info 0` and `wpctl status` in a terminal. Start or repair your user PipeWire and WirePlumber services before retrying. EQ-Space reports the failure in the Presets tab and keeps the window open.
-- **No sound after applying:** check the Mixer status and selected listening device. If it says **Output disconnected**, click **Use direct output**. If an app is **not using EQ**, try bypassing and turning EQ on again while it plays. `wpctl status` shows the current default sink, and `pw-link -l` shows the actual app and filter links. Quit EQ-Space to restore direct routing before retrying.
+- **No sound after applying:** check the Mixer status and selected listening device. Turn off Spatial and EQ to restore direct output, then retry. `wpctl status` shows the current default sink, and `pw-link -l` shows the actual app and filter links. Quit EQ-Space to restore direct routing before retrying.
 - **No tray icon:** tray support depends on your desktop. Keep the main window open and quit it normally.
-- **Spatial or Mic unavailable:** those tabs are experimental. External SOFA extraction requires `pysofa`; microphone processing requires a separately installed DeepFilterNet LADSPA plugin. The mic level meter is hidden until real capture activity metering is available.
+- **Spatial, limiter, or Mic unavailable:** External SOFA extraction requires `pysofa`; the optional limiter requires LSP Limiter Stereo LV2 1.2.24 or newer with true-peak support and a matching PipeWire LV2 host ([Ubuntu setup](docs/lv2-host.md)); microphone processing requires a separately installed DeepFilterNet LADSPA plugin. The mic level meter is hidden until real capture activity metering is available.
 
 ## Development
 

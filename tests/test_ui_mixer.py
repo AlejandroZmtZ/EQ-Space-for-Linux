@@ -61,6 +61,12 @@ class FakeControl:
         self.calls.append(("set_system_routing", enable, kwargs.get("fallback_sink_name")))
         return enable
 
+    def link_filter_output(self, filter_node_name, target_sink_name, **kwargs):
+        if self.fail_output:
+            raise RuntimeError("device unavailable")
+        self.default = target_sink_name
+        self.calls.append(("link_filter_output", filter_node_name, target_sink_name))
+
     def get_active_output_links(self):
         if not self.routed:
             return {}
@@ -130,7 +136,7 @@ def test_eq_button_disabled_until_chain_exists(qapp):
     assert "Apply a preset" in widget.routing_button.toolTip()
 
 
-def test_turn_on_eq_locks_output_selection_and_direct_restores_it(qapp):
+def test_turn_on_eq_keeps_output_selection_enabled(qapp):
     widget, control, _ = _make(qapp, with_chain=True)
     route_states = []
     widget.routing_changed.connect(route_states.append)
@@ -138,8 +144,8 @@ def test_turn_on_eq_locks_output_selection_and_direct_restores_it(qapp):
     assert control.routed
     assert widget.routing_status_label.text() == "EQ on"
     assert widget.routing_button.text() == "Use direct output"
-    assert not widget.device_combo.isEnabled()
-    assert not widget.device_hint.isHidden()
+    assert widget.device_combo.isEnabled()
+    assert widget.device_hint.isHidden()
     assert widget.device_combo.count() == 2
     widget.routing_button.click()
     assert not control.routed
@@ -199,6 +205,36 @@ def test_change_physical_output_when_direct(qapp):
     assert widget.selected_output_name == "alsa_output.pci"
     assert widget.master_slider.value() == 75
     assert widget.routing_status_label.text() == "EQ off"
+
+
+def test_change_physical_output_when_routed(qapp):
+    widget, control, _ = _make(qapp, with_chain=True, routed=True)
+    assert widget.device_combo.isEnabled()
+    widget.device_combo.setCurrentIndex(0)
+    assert ("link_filter_output", "eqspace.filter-chain", "alsa_output.pci") in control.calls
+    assert widget.selected_output_name == "alsa_output.pci"
+    assert widget.master_slider.value() == 75
+    assert widget.routing_status_label.text() == "EQ on"
+
+
+def test_failed_output_change_when_routed_restores_selection(qapp):
+    widget, control, _ = _make(qapp, with_chain=True, routed=True)
+    control.fail_output = True
+    widget.device_combo.setCurrentIndex(0)
+    assert widget.device_combo.currentData() == "alsa_output.usb"
+    assert widget.selected_output_name == "alsa_output.usb"
+    assert "device unavailable" in widget.status_label.text()
+
+
+def test_rebuild_sinks_preserves_selected_output_name(qapp):
+    widget, control, _ = _make(qapp, with_chain=True)
+    widget.device_combo.setCurrentIndex(0)
+    assert widget.selected_output_name == "alsa_output.pci"
+    # Even if default sink getter temporarily reports old sink
+    control.default = "alsa_output.usb"
+    widget.refresh()
+    assert widget.selected_output_name == "alsa_output.pci"
+    assert widget.device_combo.currentData() == "alsa_output.pci"
 
 
 def test_failed_output_change_restores_selection_and_reports_error(qapp):
@@ -276,3 +312,39 @@ def test_refresh_does_not_rebuild_stream_rows_or_send_audio_commands(qapp):
 def test_sink_labels_describe_physical_devices():
     assert sink_display_name(PwNode(1, "bluez_output.a", None, "Audio/Sink", 1, False, description="Headphones")) == "🎧 Headphones (Bluetooth)"
     assert sink_display_name(PwNode(2, "alsa_output.pci", None, "Audio/Sink", 1, False, description="Built-in Audio")) == "🔊 Built-in Audio"
+
+
+@pytest.mark.parametrize('verified', [True, False])
+def test_mixer_banner_reports_combined_profile_stages(qapp, verified):
+    class Graph:
+        eq_enabled = True
+        def active_stages(self):
+            return ('Spatial', 'EQ', 'LSP Limiter')
+        def is_path_verified(self):
+            return verified
+    widget = MixerWidget(registry=FakeRegistry(_snapshot()), control=FakeControl(), poll_interval_ms=0)
+    widget.graph_controller = Graph()
+    widget._update_routing_banner(True, 'alsa_output.usb', 0, True)
+    assert widget.routing_status_label.text() == (
+        'Spatial + EQ + LSP Limiter active' if verified
+        else 'Spatial + EQ + LSP Limiter · Route unverified')
+    widget.close()
+
+
+def test_busy_apply_rejects_route_and_output_changes_after_refresh(qapp):
+    widget, control, _ = _make(qapp, with_chain=True)
+    widget.mutation_allowed = lambda: False
+    widget.refresh()
+    assert not widget.routing_button.isEnabled()
+    assert not widget.device_combo.isEnabled()
+    before = list(control.calls)
+    selected = widget.selected_output_name
+    widget._on_toggle_routing()
+    widget._on_default_sink(widget.device_combo.findData('alsa_output.pci'))
+    assert control.calls == before
+    assert widget.selected_output_name == selected
+    assert widget.device_combo.currentData() == selected
+    widget.mutation_allowed = lambda: True
+    widget.refresh()
+    assert widget.device_combo.isEnabled()
+    assert widget.routing_button.isEnabled()

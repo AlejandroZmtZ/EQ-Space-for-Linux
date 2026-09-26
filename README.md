@@ -2,6 +2,8 @@
 
 EQ-Space is a **GUI-first prototype** for a PipeWire system-wide parametric equalizer. Python builds filter-chain configurations and controls PipeWire; PipeWire performs the audio processing. The main flow is selecting a built-in EQ preset and applying it from the Presets tab, with optional Spatial processing before EQ.
 
+The goal is a user-friendly, straightforward app for people who know how they like their audio to sound and want the freedom to shape it. EQ-Space also lets Ubuntu and Linux users explore an immersive, Dolby Atmos-like listening experience through experimental 3D spatial audio. This is virtual spatial processing rather than Dolby Atmos decoding or certification. The spatial features are an ongoing experiment, with the aim of improving their quality and usability over time.
+
 ![EQ-Space main window](docs/screenshots/main-window.png)
 
 ## What works
@@ -13,6 +15,10 @@ EQ-Space is a **GUI-first prototype** for a PipeWire system-wide parametric equa
 - Per-app volume and mute controls, an EQ toggle, and a physical listening-device selector. An optional LSP Limiter Stereo LV2 stage appears only when the installed plugin exposes the required true-peak mode and ports; it is off by default.
 - Local JSON profiles with atomic writes. The GUI loads the last saved profile into the editor at startup; click Apply to activate it. While EQ is active, graph, band and preamp edits update sound automatically after a 180 ms pause, using verified Apply and headroom. Edits while EQ is bypassed remain in the editor until Apply.
 - Spatial offers crossfeed and a **synthetic KEMAR-style model**; it is not a measured KEMAR SOFA recording. External SOFA files need optional `pysofa`. Mic noise reduction needs the DeepFilterNet LADSPA plugin and capture routing setup.
+
+## Try it with music
+
+Use this [YouTube Music listening playlist](https://music.youtube.com/playlist?list=PLUUAIRc-NmAs&si=qkxFFdodNwziEA33) to explore EQ presets, customize the sound and experiment with 3D spatial profiles. Compare settings with familiar tracks at a comfortable listening volume. The playlist is a listening aid, not a technical audio test or an Atmos source requirement.
 
 ## Requirements
 

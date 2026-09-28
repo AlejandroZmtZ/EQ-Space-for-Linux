@@ -7,7 +7,7 @@ import math
 import time
 from typing import Callable, Optional, Protocol
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QThreadPool
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -102,7 +102,7 @@ class StreamRow(QWidget):
         layout.addWidget(self.slider, stretch=1)
 
         self.vol_label = QLabel(format_vol_db(pct) if volume is not None else "Unavailable")
-        self.vol_label.setFixedWidth(82)
+        self.vol_label.setMinimumWidth(120)
         self.vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.vol_label)
 
@@ -157,6 +157,7 @@ class StreamRow(QWidget):
 
 
 class MixerWidget(QWidget):
+    _observation_ready = Signal(bool, str, object)
     routing_changed = Signal(bool)
 
     def __init__(
@@ -216,7 +217,7 @@ class MixerWidget(QWidget):
         self._master_volume_timer.timeout.connect(self._commit_master_volume)
         master_row.addWidget(self.master_slider, stretch=1)
         self.master_vol_label = QLabel("—")
-        self.master_vol_label.setFixedWidth(82)
+        self.master_vol_label.setMinimumWidth(120)
         self.master_vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         master_row.addWidget(self.master_vol_label)
         layout.addLayout(master_row)
@@ -246,6 +247,8 @@ class MixerWidget(QWidget):
         return self._selected_output_name
 
     def is_routed(self) -> bool:
+        if getattr(self, "_observation", None) is not None:
+            return self._observation["routed"]
         graph = getattr(self, "graph_controller", None)
         if graph is not None:
             return graph.is_eq_active()
@@ -262,6 +265,10 @@ class MixerWidget(QWidget):
             return False
 
     def _default_physical_name(self) -> Optional[str]:
+        if getattr(self, "_observation", None) is not None:
+            current = self._observation["default"]
+            return next((s.name for s in self._physical_sinks if current in
+                         (s.name, s.description, str(s.id))), None)
         getter = getattr(self.control, "get_default_sink_name", None)
         if getter is None:
             return None
@@ -278,6 +285,8 @@ class MixerWidget(QWidget):
         return None
 
     def _active_links(self) -> Optional[dict[str, list[str]]]:
+        if getattr(self, "_observation", None) is not None:
+            return self._observation["links"]
         getter = getattr(self.control, "get_active_output_links", None)
         if getter is None:
             return None
@@ -351,7 +360,7 @@ class MixerWidget(QWidget):
                 self.routing_status_label.setText("EQ off" if output else "No listening device available")
             self.routing_button.setText("Turn on EQ")
             graph = getattr(self, "graph_controller", None)
-            chain_available = (bool(graph._eq_name()) if graph is not None else
+            chain_available = (True if graph is not None else
                                any(s.name == "eqspace.filter-chain" for s in self._all_sinks))
             self.routing_button.setEnabled(chain_available and output is not None)
             self.routing_button.setToolTip("Apply a preset first" if not chain_available else "Route system audio through EQ-Space")
@@ -365,12 +374,12 @@ class MixerWidget(QWidget):
             if stages:
                 combination = " + ".join(stages)
                 self.routing_status_label.setText(
-                    f"{combination} active" if graph.is_path_verified()
+                    f"{combination} active" if self._path_verified(graph)
                     else f"{combination} · Route unverified"
                 )
             else:
                 self.routing_status_label.setText(
-                    "EQ off · Direct output" if graph.is_path_verified()
+                    "EQ off · Direct output" if self._path_verified(graph)
                     else "Direct output · Route unverified"
                 )
             self.routing_button.setText("Turn off EQ" if graph.eq_enabled else "Turn on EQ")
@@ -389,6 +398,14 @@ class MixerWidget(QWidget):
             return
         graph = getattr(self, "graph_controller", None)
         if graph is not None:
+            dispatcher = getattr(self, "action_dispatcher", None)
+            if dispatcher:
+                if not graph.eq_enabled:
+                    self.eq_enable_requested()
+                else:
+                    dispatcher("Connecting playback…", graph.eq_off if graph.eq_enabled else graph.eq_on,
+                               lambda ok, msg, _: self.status_label.setText("" if ok else msg))
+                return
             try:
                 graph.eq_off() if graph.eq_enabled else graph.eq_on()
             except Exception as exc:
@@ -419,6 +436,67 @@ class MixerWidget(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        if getattr(self, "action_dispatcher", None) and self.control is _control:
+            self._refresh_async()
+            return
+        self._refresh_sync()
+
+    def _path_verified(self, graph):
+        observation = getattr(self, "_observation", None)
+        return observation["verified"] if observation is not None else graph.is_path_verified()
+
+    def _refresh_async(self):
+        if getattr(self, "_refresh_worker", None) is not None or not self.mutation_allowed():
+            return
+        from eqspace.ui.async_worker import AsyncActionWorker
+        if not getattr(self, "_observation_connected", False):
+            self._observation_ready.connect(self._finish_observation)
+            self._observation_connected = True
+        graph = getattr(self, "graph_controller", None)
+        selected = self._selected_output_name
+        self._observing_revision = getattr(self, "_refresh_revision", 0)
+
+        def observe():
+            snapshot = self.registry.snapshot()
+            routed = graph.is_eq_active() if graph else self.is_routed()
+            links = self._active_links()
+            default = _control.get_default_sink_name(runner=getattr(self.registry, "_runner", None), timeout=2.0)
+            sink = next((s for s in snapshot.sinks if s.name == selected), None)
+            volume = None
+            if sink:
+                try:
+                    volume = self.control.get_volume(sink.id)
+                except Exception:
+                    pass
+            return dict(snapshot=snapshot, routed=routed, links=links, default=default,
+                        verified=graph.is_path_verified() if graph else routed, volume=volume)
+
+        self._refresh_worker = AsyncActionWorker(observe)
+        self._refresh_worker.signals.result.connect(self._observation_ready.emit)
+        QThreadPool.globalInstance().start(self._refresh_worker)
+
+    @Slot(bool, str, object)
+    def _finish_observation(self, success, message, result):
+        self._refresh_worker = None
+        if not self.mutation_allowed():
+            return
+        if self._observing_revision != getattr(self, "_refresh_revision", 0):
+            self.refresh()
+            return
+        if not success:
+            self.status_label.setText(f"PipeWire unavailable: {message}")
+            return
+        self._observation = result
+        try:
+            self._render_snapshot(result["snapshot"])
+        finally:
+            self._observation = None
+
+    def invalidate_observation(self):
+        """Discard polls started before a playback transaction changed its target."""
+        self._refresh_revision = getattr(self, "_refresh_revision", 0) + 1
+
+    def _refresh_sync(self):
         self.refresh_mutation_controls()
         try:
             snapshot = self.registry.snapshot()
@@ -429,6 +507,9 @@ class MixerWidget(QWidget):
             logger.warning("registry snapshot failed: %s", exc)
             self.status_label.setText("PipeWire unavailable")
             return
+        self._render_snapshot(snapshot)
+
+    def _render_snapshot(self, snapshot):
         self._all_sinks = snapshot.sinks
         routed = self.is_routed()
         observed_links = self._active_links()
@@ -503,7 +584,8 @@ class MixerWidget(QWidget):
         if sink is None:
             return
         try:
-            level = float(self.control.get_volume(sink.id))
+            observation = getattr(self, "_observation", None)
+            level = float(observation["volume"] if observation is not None else self.control.get_volume(sink.id))
         except Exception as exc:
             self.master_slider.setEnabled(False)
             self.master_vol_label.setText("Unavailable")
@@ -552,6 +634,21 @@ class MixerWidget(QWidget):
         self._master_volume_timer.stop()
         graph = getattr(self, "graph_controller", None)
         if graph is not None:
+            dispatcher = getattr(self, "action_dispatcher", None)
+            if dispatcher:
+                def finished(ok, message, result):
+                    if ok:
+                        self._selected_output_name = name
+                        self._synced_output_name = None
+                    self.status_label.setText("" if ok else f"Could not change output: {message}")
+                    self.refresh()
+                def switch_output():
+                    graph.set_output(name)
+                    # Publish the controller's selected physical target before
+                    # the common worker's final route observation.
+                    self._selected_output_name = name
+                dispatcher("Connecting output…", switch_output, finished)
+                return
             try:
                 graph.set_output(name)
             except Exception as exc:

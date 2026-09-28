@@ -100,17 +100,17 @@ def test_failed_restoration_reports_unverified_state():
         manager.reload(NEW, timeout=0.05)
 
 
-def test_profile_v1_migrates_to_v3_with_gain_behavior_intact(tmp_path, monkeypatch):
+def test_profile_v1_migrates_to_v4_with_gain_behavior_intact(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     path = storage.profiles_dir() / "older.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"name": "older", "version": 1, "bands": []}))
     profile = storage.load_profile("older")
-    assert profile.version == 3 and profile.preamp_db == 0
+    assert profile.version == 4 and profile.preamp_db == 0
     assert profile.automatic_headroom is False
     assert profile.spatial_enabled is None
     storage.save_profile(profile.model_copy(update={"preamp_db": -6.0}))
-    assert json.loads(path.read_text())["version"] == 3
+    assert json.loads(path.read_text())["version"] == 4
     assert storage.load_profile("older").preamp_db == -6.0
 
 

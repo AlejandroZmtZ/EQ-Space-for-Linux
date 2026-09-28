@@ -14,6 +14,7 @@ class WorkerSignals(QObject):
 
     started = Signal()
     finished = Signal(bool, str)  # (success, message_or_error)
+    result = Signal(bool, str, object)
 
 
 class AsyncActionWorker(QRunnable):
@@ -32,9 +33,11 @@ class AsyncActionWorker(QRunnable):
             res = self.action(*self.args, **self.kwargs)
             msg = str(res) if res is not None else ""
             self.signals.finished.emit(True, msg)
+            self.signals.result.emit(True, msg, res)
         except Exception as exc:
             logger.exception("AsyncActionWorker encountered an error")
             self.signals.finished.emit(False, str(exc))
+            self.signals.result.emit(False, str(exc), None)
 
 
 def run_async(

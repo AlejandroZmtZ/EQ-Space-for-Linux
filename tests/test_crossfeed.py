@@ -66,3 +66,15 @@ class TestCrossfeedDSP:
         assert 'label = bq_lowpass name = "lp_l2r" control = { "Freq" = 650 "Q" = 0.5 }' in args_meier
         meier_gain = 10.0 ** (-4.5 / 20.0)
         assert f'"Gain 2" = {meier_gain:g}' in args_meier
+
+
+@pytest.mark.parametrize('preset', ['bauer', 'meier', 'strong'])
+def test_crossfeed_playback_waits_for_controller_verified_linking(preset):
+    """Staging a module must not connect its output to an arbitrary default."""
+    import re
+    args = render_crossfeed_chain_args(preset=preset, node_name='eqspace.crossfeed.staged')
+    playback = re.search(r'playback.props = \{ ([^}]+) \}', args)[1]
+    assert 'node.name = "eqspace.crossfeed.staged.playback"' in playback
+    assert 'node.passive = true' in playback
+    assert 'node.autoconnect = false' in playback
+    assert 'audio.position = [ FL FR ]' in playback

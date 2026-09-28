@@ -1,0 +1,52 @@
+{
+  "name": "holo_punch_experimental",
+  "display_name": "Holo Punch \u2014 Experimental",
+  "description": "Aggressive experimental bass punch and presence lift with a low-mid cut. This creative EQ is not neutral, headphone correction, or a validated acoustic target. Start at a comfortable playback volume; automatic headroom estimates peak reserve and is not guaranteed clipping protection. EQ only; preserves Spatial and LSP settings.",
+  "research_basis": "Creative listening experiment; no research target or measurement validation claimed.",
+  "preamp_db": 0,
+  "automatic_headroom": true,
+  "bands": [
+    {
+      "band_type": "low_shelf",
+      "freq_hz": 70,
+      "gain_db": 5.5,
+      "q": 0.707,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 110,
+      "gain_db": 2.5,
+      "q": 0.9,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 300,
+      "gain_db": -2.5,
+      "q": 1,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1800,
+      "gain_db": 3,
+      "q": 0.9,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 3800,
+      "gain_db": 4,
+      "q": 1,
+      "enabled": true
+    },
+    {
+      "band_type": "high_shelf",
+      "freq_hz": 8000,
+      "gain_db": 1.5,
+      "q": 0.707,
+      "enabled": true
+    }
+  ]
+}

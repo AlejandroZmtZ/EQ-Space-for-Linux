@@ -18,6 +18,9 @@ class FakeEQ:
     is_loaded: bool = False
     node_name: str = "eqspace.filter-chain"
 
+    def unload(self):
+        self.is_loaded = False
+
 
 class FakeRegistry:
     def __init__(self):
@@ -103,6 +106,20 @@ def graph(monkeypatch):
 
 ARGS = ('capture.props = { node.name = "eqspace.spatial" } '
         'playback.props = { node.name = "eqspace.spatial.playback" }')
+
+
+def test_retained_spatial_gain_remains_in_verified_path_at_nonpositive_peak(graph):
+    controller, _, _, state = graph
+    controller.switch_spatial(ARGS, peak_db=3.0)
+    gain = controller.output_gain_name
+    owner = controller.output_gain_manager
+    controller.spatial_peak_db = -2.0  # A verified live level edit retains reserve.
+    assert controller._current_stages() == [controller.spatial_name, gain]
+    assert controller.is_path_verified()
+    controller._retire_unused_output_gains()
+    assert owner.is_loaded
+    assert controller.output_gain_name == gain
+    assert state["links"][(controller.spatial_name, "FL")] == gain
 
 
 @pytest.mark.parametrize("eq_on,spatial_on", [(False, False), (True, False),
@@ -336,6 +353,7 @@ def test_stream_disappearing_between_snapshots_is_not_a_failed_route(monkeypatch
         raise PipeWireControlError("no such stream node: Brave")
 
     monkeypatch.setattr(control, "move_stream", stale)
+    monkeypatch.setattr(control, "_run", lambda *args: "")
     observations = iter([{"Brave:output_FL": ["old:playback_FL"]}, {}])
     monkeypatch.setattr(control, "get_active_output_links", lambda **kwargs: next(observations))
     control._move_observed_stream(stream, "eqspace.test", Registry(), None, 1.0)
@@ -559,7 +577,7 @@ def test_repeated_spatial_switches_retire_obsolete_gain_owners(graph):
     controller, eq, registry, state = graph
     for peak in (3, 6, 2, 5, 0, 4):
         controller.switch_spatial(ARGS, peak)
-        assert sum(module.is_loaded for module in state['modules']) == (2 if peak > 0 else 1)
+        assert sum(module.is_loaded for module in state['modules']) == (2 if peak > 0 or controller.output_gain_manager else 1)
         assert not controller._retained_managers
     eq.is_loaded = True
     registry.sinks.add(eq.node_name)
@@ -605,3 +623,246 @@ def test_old_spatial_unload_failure_is_retained_for_shutdown_retry(graph, monkey
     controller.shutdown()
     assert attempts == 2
     assert not any(module.is_loaded for module in state['modules'])
+
+
+CAPABILITY = LimiterCapability(Path('/tmp/limiter_stereo.ttl'), 21,
+                               ('in_l', 'in_r'), ('out_l', 'out_r'), 'out_latency')
+
+
+@pytest.mark.parametrize('order', tuple(__import__('itertools').permutations(('eq', 'spatial', 'limiter'))))
+def test_independent_effects_enable_and_disable_in_every_order(graph, order):
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    actions = {
+        'eq': (controller.eq_on, controller.eq_off),
+        'spatial': (lambda: controller.switch_spatial(ARGS, 4), controller.spatial_off),
+        'limiter': (lambda: controller.set_limiter(True, CAPABILITY), lambda: controller.set_limiter(False)),
+    }
+    for effect in order:
+        actions[effect][0]()
+        assert controller.is_path_verified()
+    assert controller.active_stages() == ('Spatial', 'EQ', 'LSP Limiter')
+    for effect in order:
+        actions[effect][1]()
+        assert controller.is_path_verified()
+    assert state['default'] == 'alsa.output'
+    assert controller.active_stages() == ()
+
+
+def test_default_policy_reconnecting_eq_backwards_rejects_spatial_candidate(graph, monkeypatch):
+    from eqspace.core.pipewire import control
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    controller.eq_on()
+    old = controller.switch_spatial(ARGS)
+    original_route = control.set_system_routing
+
+    def policy_route(*args, **kwargs):
+        original_route(*args, **kwargs)
+        target = kwargs.get('filter_node_name')
+        if target and target.startswith('eqspace.spatial.') and target != old:
+            state['links'][(eq.node_name, 'FL')] = target
+            state['links'][(eq.node_name, 'FR')] = target
+
+    monkeypatch.setattr(control, 'set_system_routing', policy_route)
+    with pytest.raises(AudioGraphError, match='unverified'):
+        controller.switch_spatial(ARGS)
+    assert controller.spatial_name == old
+    assert old in registry.sinks
+    assert controller.is_path_verified()
+    assert not state['modules'][-1].is_loaded
+
+
+def test_route_commit_requires_second_fresh_full_observation(graph, monkeypatch):
+    from eqspace.core.pipewire import control
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    controller.eq_on()
+    old = controller.switch_spatial(ARGS)
+    original_verify = control.verify_playback_route
+    observations = []
+
+    def delayed_policy(target, registry):
+        original_verify(target, registry)
+        if target.startswith('eqspace.spatial.') and target != old:
+            observations.append(target)
+            # The first observation succeeds; policy changes the graph immediately
+            # afterwards. A second complete observation must reject the candidate.
+            state['links'][(eq.node_name, 'FR')] = target
+
+    monkeypatch.setattr(control, 'verify_playback_route', delayed_policy)
+    with pytest.raises(AudioGraphError, match='unverified'):
+        controller.switch_spatial(ARGS)
+    assert observations
+    assert controller.spatial_name == old
+    assert controller.is_path_verified()
+
+
+def test_standalone_limiter_shutdown_verifies_direct_before_destroy(graph):
+    controller, _, _, state = graph
+    controller.set_limiter(True, CAPABILITY)
+    owner = controller.limiter_manager
+    state['fail_direct_verify'] = True
+    with pytest.raises(RuntimeError):
+        controller.shutdown()
+    assert owner.is_loaded
+    state['fail_direct_verify'] = False
+    controller.shutdown()
+    assert not owner.is_loaded
+
+
+@pytest.mark.parametrize('eq_on,spatial_on,limiter_on', tuple(__import__('itertools').product((False, True), repeat=3)))
+def test_atomic_configure_supports_all_eight_effect_states(graph, eq_on, spatial_on, limiter_on):
+    controller, eq, registry, state = graph
+    eq.is_loaded = eq_on
+    if eq_on:
+        registry.sinks.add(eq.node_name)
+    controller.configure_playback(eq_enabled=eq_on, eq_candidate=eq if eq_on else None,
+                                  spatial_args=ARGS if spatial_on else None,
+                                  spatial_peak_db=4 if spatial_on else 0,
+                                  limiter_enabled=limiter_on, limiter_capability=CAPABILITY)
+    assert controller.is_path_verified()
+    assert controller.active_stages() == tuple(label for on, label in (
+        (spatial_on, 'Spatial'), (eq_on, 'EQ'), (limiter_on, 'LSP Limiter')) if on)
+    if spatial_on and not eq_on:
+        assert controller.output_gain_db == -5
+    assert state['default'] == (controller.entrance_name() or 'alsa.output')
+
+
+def test_atomic_candidate_retains_entire_old_chain_until_commit(graph, monkeypatch):
+    from eqspace.core.pipewire import control
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    controller.eq_on()
+    controller.switch_spatial(ARGS, 4)
+    controller.set_limiter(True, CAPABILITY)
+    old_spatial, old_limiter = controller.spatial_manager, controller.limiter_manager
+    old_links = dict(state['links'])
+    candidate = FakeEQ(True, 'eqspace.filter-chain.candidate')
+    registry.sinks.add(candidate.node_name)
+    original_route = control.set_system_routing
+    committed = []
+
+    def check_before_handoff(*args, **kwargs):
+        assert old_spatial.is_loaded and old_limiter.is_loaded and eq.is_loaded
+        for key, value in old_links.items():
+            assert state['links'][key] == value
+        committed.append(True)
+        original_route(*args, **kwargs)
+
+    monkeypatch.setattr(control, 'set_system_routing', check_before_handoff)
+    result = controller.configure_playback(eq_enabled=True, eq_candidate=candidate,
+                                          spatial_args=ARGS, spatial_peak_db=7,
+                                          limiter_enabled=True, limiter_capability=CAPABILITY)
+    assert result is candidate
+    assert committed
+    assert not old_spatial.is_loaded and not old_limiter.is_loaded
+    assert controller.is_path_verified()
+
+
+def test_failed_louder_spatial_candidate_restores_previous_native_gain_identity(graph, monkeypatch):
+    from eqspace.core.pipewire import control
+    controller, _, _, state = graph
+    old = controller.switch_spatial(ARGS, 3)
+    old_gain = controller.output_gain_manager
+    original_route = control.set_system_routing
+    def fail_candidate(*args, **kwargs):
+        if kwargs.get('filter_node_name', old) != old:
+            raise RuntimeError('candidate handoff rejected')
+        return original_route(*args, **kwargs)
+    monkeypatch.setattr(control, 'set_system_routing', fail_candidate)
+    with pytest.raises(AudioGraphError):
+        controller.switch_spatial(ARGS, 7)
+    assert controller.output_gain_manager is old_gain
+    assert controller.is_path_verified()
+    assert sum(module.is_loaded for module in state['modules']) == 2
+
+
+STATES = tuple(__import__('itertools').product((False, True), repeat=3))
+
+
+@pytest.mark.parametrize('before,after', tuple(__import__('itertools').product(STATES, repeat=2)))
+def test_atomic_transitions_between_every_pair_of_effect_states(graph, before, after):
+    controller, eq, registry, _ = graph
+    for index, (eq_on, spatial_on, limiter_on) in enumerate((before, after)):
+        candidate = FakeEQ(True, f'eqspace.filter-chain.candidate{index}') if eq_on else None
+        if candidate:
+            registry.sinks.add(candidate.node_name)
+        controller.configure_playback(eq_enabled=eq_on, eq_candidate=candidate,
+                                      spatial_args=ARGS if spatial_on else None,
+                                      spatial_peak_db=5 if spatial_on else 0,
+                                      limiter_enabled=limiter_on, limiter_capability=CAPABILITY)
+        assert controller.is_path_verified()
+        assert controller.active_stages() == tuple(label for on, label in (
+            (spatial_on, 'Spatial'), (eq_on, 'EQ'), (limiter_on, 'LSP Limiter')) if on)
+
+
+def test_atomic_wrapper_clones_applied_controls_and_adopts_candidate(graph, monkeypatch):
+    from eqspace.core.filterchain import manager as manager_module
+    from eqspace.core.filterchain.manager import FilterSpec
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    eq._active_filters = (FilterSpec('preamp', 'linear', {'Mult': 0.25, 'Add': 0}),)
+    eq._active_channels = ('FL', 'FR')
+    eq.description, eq._runner, eq._popen = 'EQ', None, None
+    controller.eq_on()
+    old_spatial = controller.switch_spatial(ARGS, 4)
+    controller.atomic_transitions = True
+    snapshots = []
+    class Candidate(FakeEQ):
+        def __init__(self, node_name, **kwargs):
+            super().__init__(False, node_name)
+        def load(self, specs, channels):
+            assert controller.spatial_name == old_spatial
+            assert eq.is_loaded
+            self._active_filters = tuple(specs)
+            self.is_loaded = True
+            registry.sinks.add(self.node_name)
+            snapshots.append(tuple(specs))
+        def verify_controls(self, specs):
+            assert tuple(specs) == self._active_filters
+    monkeypatch.setattr(manager_module, 'FilterChainManager', Candidate)
+    controller.switch_spatial(ARGS, 7)
+    assert snapshots == [eq._active_filters]
+    assert controller._active_eq_manager() is not eq
+    assert not eq.is_loaded
+    assert controller.is_path_verified()
+
+
+def test_failed_candidate_finalization_restores_old_graph_and_eq_owner(graph):
+    controller, eq, registry, state = graph
+    eq.is_loaded = True
+    registry.sinks.add(eq.node_name)
+    controller.eq_on()
+    old_spatial = controller.switch_spatial(ARGS, 4)
+    old_owner = controller.spatial_manager
+    candidate = FakeEQ(True, 'eqspace.filter-chain.candidate')
+    registry.sinks.add(candidate.node_name)
+    def reject_final_gain():
+        assert controller._active_eq_manager() is candidate
+        assert eq.is_loaded and old_owner.is_loaded
+        raise RuntimeError('final gain readback rejected')
+    with pytest.raises(AudioGraphError, match='final gain readback rejected'):
+        controller.configure_playback(eq_enabled=True, eq_candidate=candidate,
+                                      spatial_args=ARGS, spatial_peak_db=2,
+                                      finalize_candidate=reject_final_gain)
+    assert controller._active_eq_manager() is eq
+    assert controller.spatial_name == old_spatial
+    assert controller.is_path_verified()
+    assert eq.is_loaded and old_owner.is_loaded
+    assert not candidate.is_loaded
+
+
+@pytest.mark.parametrize('atomic', [False, True])
+def test_spatial_owner_resolves_its_unique_node_for_live_controls(graph, atomic):
+    controller, _, _, _ = graph
+    if atomic:
+        controller.configure_playback(eq_enabled=False, spatial_args=ARGS, spatial_peak_db=0)
+    else:
+        controller.switch_spatial(ARGS)
+    assert controller.spatial_manager.node_name == controller.spatial_name

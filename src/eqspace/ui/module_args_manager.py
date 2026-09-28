@@ -14,6 +14,8 @@ import re
 import os
 import subprocess
 import threading
+import json
+import math
 
 from eqspace.core.filterchain.manager import COMMAND_TIMEOUT, FilterChainError, FilterChainManager
 
@@ -79,3 +81,34 @@ class ModuleArgsManager(FilterChainManager):
         if self.is_loaded:
             self.unload(timeout=timeout)
         return self.load_args(args, timeout=timeout)
+
+    def update_controls(self, controls: dict[str, float], timeout: float = COMMAND_TIMEOUT) -> None:
+        """Batch live Spatial controls; timeout is decided by readback, with verified rollback."""
+        if not self.is_loaded:
+            raise FilterChainError("Spatial module is not loaded")
+        if not all(math.isfinite(float(value)) for value in controls.values()):
+            raise FilterChainError("nonfinite Spatial control")
+        observed = self._read_controls(timeout)
+        if any(key not in observed for key in controls):
+            raise FilterChainError("Spatial controls are absent from the loaded module")
+        previous = {key: observed[key] for key in controls}
+        changed = {key: value for key, value in controls.items() if previous[key] != value}
+        if not changed:
+            return
+        pairs = [item for pair in changed.items() for item in pair]
+        for attempt in range(2):
+            try:
+                node_id = self._resolve_node_id(self.node_name, None)
+                output = self._run(["pw-cli", "set-param", str(node_id), "Props",
+                                    json.dumps({"params": pairs})], timeout)
+                if "error:" in output.lower():
+                    raise FilterChainError(output.strip())
+            except FilterChainError:
+                pass
+            try:
+                if self._readback_matches(controls, timeout):
+                    return
+            except FilterChainError:
+                pass
+        self._restore_controls(previous, timeout)
+        raise FilterChainError("Spatial update failed; previous controls restored")

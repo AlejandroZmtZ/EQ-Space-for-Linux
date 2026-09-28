@@ -179,7 +179,7 @@ def test_apply_holospace_3d_layout(make_widget):
 
 def test_profile_combo_options_and_default(make_widget):
     widget, _ = make_widget()
-    assert widget.profile_combo.count() == 6
+    assert widget.profile_combo.count() == 7
     expected_profiles = [
         "HoloSpace 3D (Signature Spatial Immersion)",
         "Cinema 7.1 Surround (Virtual Room)",
@@ -187,6 +187,7 @@ def test_profile_combo_options_and_default(make_widget):
         "Natural Crossfeed — Meier (Warm Acoustic Blend)",
         "Studio Monitor (Nearfield ±30°)",
         "Custom SOFA Profile (External File)",
+        "HS+ (Experimental)",
     ]
     items = [widget.profile_combo.itemText(i) for i in range(widget.profile_combo.count())]
     assert items == expected_profiles
@@ -200,10 +201,12 @@ def test_info_card_content_updates(make_widget):
     widget, _ = make_widget()
 
     widget.profile_combo.setCurrentText("Cinema 7.1 Surround (Virtual Room)")
-    assert "virtualizes a full 7.1" in widget.info_desc_label.text().lower()
+    assert "synthetic" in widget.info_desc_label.text().lower()
+    assert "7.1" in widget.info_desc_label.text()
 
     widget.profile_combo.setCurrentText("Natural Crossfeed — Bauer (Fatigue-Free Stereo)")
-    assert "bauer" in widget.info_desc_label.text().lower() or "250µs" in widget.info_desc_label.text().lower()
+    assert "low frequencies" in widget.info_desc_label.text().lower()
+    assert "250µs" not in widget.info_desc_label.text()
 
     widget.profile_combo.setCurrentText("Natural Crossfeed — Meier (Warm Acoustic Blend)")
     assert "meier" in widget.info_desc_label.text().lower() or "warm" in widget.info_desc_label.text().lower()
@@ -376,3 +379,53 @@ def test_busy_control_refresh_preserves_spatial_result(make_widget, status):
     widget.refresh_mutation_controls()
     assert widget.status_label.text() == status
     assert widget.apply_button.isEnabled()
+
+
+def test_hybrid_selection_explicit_apply_and_live_controls(make_widget):
+    from eqspace.ui.spatial.spatial_widget import PROFILE_HYBRID
+    widget, manager = make_widget(files=())
+    calls = []
+    widget.on_live_controls_changed = lambda controls, peak: calls.append((controls, peak))
+    widget.profile_combo.setCurrentText(PROFILE_HYBRID)
+    assert not hasattr(widget, 'hybrid_balance_slider')
+    assert not hasattr(widget, 'crossover_slider')
+    assert not hasattr(widget, 'dev_controls_group')
+    assert 'experimental' in widget.info_desc_label.text().lower()
+    assert '60%' not in widget.info_desc_label.text() and '1400' not in widget.info_desc_label.text()
+    assert not calls and not manager.loaded
+    from types import SimpleNamespace
+    widget.graph_controller = SimpleNamespace(
+        registry=SimpleNamespace(graph_rate=lambda required: 48000),
+        switch_spatial=lambda args, peak: None,
+    )
+    widget.apply()
+    widget.wetdry_slider.setValue(50)
+    assert calls and calls[-1][0]['hybrid_l:Gain 1'] == .3
+    assert calls[-1][0]['hybrid_l:Gain 2'] == .2
+    widget.wetdry_slider.setValue(0)
+    assert all(value == 0 for value in calls[-1][0].values())
+    state = widget.get_state()
+    assert 'hybrid_balance' not in state and 'crossover_hz' not in state
+    widget.set_state(dict(state, hybrid_balance='obsolete', crossover_hz=500))
+    assert widget.get_state() == state
+
+
+def test_hybrid_dispatcher_takes_snapshot_and_preserves_applied_controls(make_widget):
+    from eqspace.ui.spatial.spatial_widget import PROFILE_HYBRID
+    from types import SimpleNamespace
+    widget, _ = make_widget(files=())
+    jobs = []
+    widget.action_dispatcher = lambda label, backend, finished: jobs.append((backend, finished))
+    switched = []
+    widget.graph_controller = SimpleNamespace(
+        registry=SimpleNamespace(graph_rate=lambda required: 48000),
+        switch_spatial=lambda args, peak: switched.append(args),
+    )
+    widget.profile_combo.setCurrentText(PROFILE_HYBRID)
+    widget.apply()
+    widget.wetdry_slider.setValue(20)
+    backend, finished = jobs.pop()
+    result = backend()
+    finished(True, '', result)
+    assert '"Gain 1" = 0.6 "Gain 2" = 0.4' in switched[0]
+    assert widget._applied_state['wet'] == 100

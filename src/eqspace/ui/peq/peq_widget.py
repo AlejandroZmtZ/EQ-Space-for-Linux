@@ -5,7 +5,7 @@ tick labels show real frequencies. Dragging a handle moves freq/gain, the
 mouse wheel over a handle adjusts Q. ``Apply`` pushes the band list to the
 injected FilterChainManager; ``Save as profile`` only emits the
 :attr:`PeqWidget.save_profile_requested` signal — profile persistence is
-wired up in a later task.
+owned by the main window.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ class _BandHandles(pg.ScatterPlotItem):
 
 
 class PeqWidget(QWidget):
-    # Stub for the profiles feature (later task): emitted with the current
+    # Emitted with the current
     # list of EQBand when the user clicks "Save as profile".
     save_profile_requested = Signal(list)
     apply_completed = Signal(bool)

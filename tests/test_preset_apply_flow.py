@@ -96,7 +96,9 @@ def wait_done(qapp, window, timeout=5):
 @pytest.mark.parametrize("name", list_presets())
 def test_each_core_preset_finishes_active(setup_window, qapp, name):
     window, manager, state = setup_window
-    names = [window.presets.preset_list.item(i).text() for i in range(window.presets.preset_list.count())]
+    from PySide6.QtCore import Qt
+    names = [window.presets.preset_list.item(i).data(Qt.ItemDataRole.UserRole)[1]
+             for i in range(window.presets.preset_list.count())]
     assert name in names
     window.presets.preset_list.setCurrentRow(names.index(name))
     window.presets.apply_button.click()

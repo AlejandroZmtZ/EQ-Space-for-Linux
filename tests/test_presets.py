@@ -10,7 +10,9 @@ from eqspace.core.dsp.target_curves import HARMAN_IE_2019, HARMAN_OE_2018, evalu
 from eqspace.core.profiles import models, presets
 
 EXPECTED_PRESETS = [
+    "acoustic_presence_custom",
     "flat",
+    "holo_punch_experimental",
     "harman_over_ear_2018",
     "harman_in_ear_2019",
     "bass_boost",

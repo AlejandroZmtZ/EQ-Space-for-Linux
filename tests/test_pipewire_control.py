@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -91,12 +92,12 @@ def _dump_with_serials(stream_serial: int, sink_serial: int) -> str:
     return json.dumps(data)
 
 
-def test_move_stream_sets_metadata_target_by_serial():
+def test_move_stream_uses_node_id_subject_and_serial_target():
     rec = Recorder()
     registry = PipeWireRegistry(runner=Recorder(_dump_with_serials(7171, 4848)))
     move_stream(71, 48, runner=rec, registry=registry)
     (cmd, _), = rec.calls
-    assert cmd == ["pw-metadata", "7171", "target.object", "4848"]
+    assert cmd == ["pw-metadata", "71", "target.object", "4848"]
 
 
 def test_move_stream_by_sink_name():
@@ -104,7 +105,28 @@ def test_move_stream_by_sink_name():
     registry = PipeWireRegistry(runner=Recorder(_dump_with_serials(7171, 4848)))
     move_stream(71, "alsa_output.pci-0000_00_1f.3.analog-stereo", runner=rec, registry=registry)
     (cmd, _), = rec.calls
-    assert cmd == ["pw-metadata", "7171", "target.object", "4848"]
+    assert cmd == ["pw-metadata", "71", "target.object", "4848"]
+
+
+@pytest.mark.parametrize("always_timeout", [False, True])
+def test_move_stream_retries_metadata_timeout_once(always_timeout):
+    rec = Recorder()
+    registry = PipeWireRegistry(runner=Recorder(_dump_with_serials(7171, 4848)))
+    original = rec.__class__.__call__
+    class TimedRecorder(Recorder):
+        def __call__(self, cmd, timeout):
+            original(self, cmd, timeout)
+            if always_timeout or len(self.calls) == 1:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            return ""
+    rec = TimedRecorder()
+    if always_timeout:
+        with pytest.raises(subprocess.TimeoutExpired):
+            move_stream(71, 48, runner=rec, registry=registry)
+    else:
+        move_stream(71, 48, runner=rec, registry=registry)
+    assert len(rec.calls) == 2
+    assert rec.calls[0][0] == rec.calls[1][0]
 
 
 def test_move_stream_unknown_node_raises():
@@ -113,6 +135,30 @@ def test_move_stream_unknown_node_raises():
         move_stream(999, 48, runner=Recorder(), registry=registry)
     with pytest.raises(PipeWireControlError, match="no such sink node"):
         move_stream(71, 999, runner=Recorder(), registry=registry)
+
+
+@pytest.mark.parametrize("always_timeout", [False, True])
+def test_move_stream_retries_wrapped_production_timeout(monkeypatch, always_timeout):
+    from types import SimpleNamespace
+    from eqspace.core.pipewire import control
+    registry = PipeWireRegistry(runner=Recorder(_dump_with_serials(7171, 4848)))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if always_timeout or len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(control, "relink_stream_ports", lambda *args, **kwargs: None)
+    if always_timeout:
+        with pytest.raises(PipeWireControlError, match="timed out"):
+            move_stream(71, 48, registry=registry)
+    else:
+        move_stream(71, 48, registry=registry)
+    assert len(calls) == 2
+    assert calls[0] == calls[1] == ["pw-metadata", "71", "target.object", "4848"]
 
 
 def test_command_failure_raises_control_error():
@@ -138,12 +184,12 @@ Audio
  │      47. Built-in Audio                      [alsa]
  ├─ Sinks:
  │      48. Built-in Audio Analog Stereo        [vol: 0.00]
- │  *   63. WH-CH720N                           [vol: 0.68]
+ │  *   63. Wireless Headphones                           [vol: 0.68]
  ├─ Sources:
  │  *   49. Built-in Audio Analog Stereo        [vol: 0.00]
 """
     rec = Recorder(output)
-    assert get_default_sink_name(runner=rec) == "WH-CH720N"
+    assert get_default_sink_name(runner=rec) == "Wireless Headphones"
     assert rec.calls[0][0] == ["wpctl", "status"]
 
 
@@ -238,7 +284,7 @@ def test_set_system_routing_disable_prefers_bluetooth_fallback():
     reg = MockRegistry([
         PwNode(95, "eqspace.filter-chain", "EQ-Space Filter Chain", "Audio/Sink", 1.0, False),
         PwNode(48, "alsa_output.pci", "Built-in Audio", "Audio/Sink", 1.0, False),
-        PwNode(63, "bluez_output.headphones", "Sony WH-CH720N", "Audio/Sink", 0.7, False),
+        PwNode(63, "bluez_output.headphones", "Wireless Headphones", "Audio/Sink", 0.7, False),
     ])
     result = set_system_routing(False, registry=reg, runner=rec)
     assert result is False
@@ -250,7 +296,7 @@ def test_set_system_routing_disable_with_explicit_fallback():
     reg = MockRegistry([
         PwNode(95, "eqspace.filter-chain", "EQ-Space Filter Chain", "Audio/Sink", 1.0, False),
         PwNode(48, "alsa_output.pci", "Built-in Audio", "Audio/Sink", 1.0, False),
-        PwNode(63, "bluez_output.headphones", "Sony WH-CH720N", "Audio/Sink", 0.7, False),
+        PwNode(63, "bluez_output.headphones", "Wireless Headphones", "Audio/Sink", 0.7, False),
     ])
     result = set_system_routing(False, fallback_sink_name="alsa_output.pci", registry=reg, runner=rec)
     assert result is False
@@ -355,10 +401,10 @@ def test_is_system_routed_false_when_other_sink_default():
     output = """
 Audio
  ├─ Sinks:
- │  *   63. WH-CH720N
+ │  *   63. Wireless Headphones
 """
     reg = MockRegistry([
-        PwNode(63, "bluez_output", "WH-CH720N", "Audio/Sink", 1.0, False),
+        PwNode(63, "bluez_output", "Wireless Headphones", "Audio/Sink", 1.0, False),
         PwNode(95, "eqspace.filter-chain", "EQ-Space Filter Chain", "Audio/Sink", 1.0, False),
     ])
     assert is_system_routed("eqspace.filter-chain", runner=Recorder(output), registry=reg) is False
@@ -644,3 +690,81 @@ def test_native_surround_relink_preserves_each_channel(monkeypatch):
     control.relink_stream_ports('player', 'cinema', runner=runner)
     for ch in channels:
         assert ('pw-link', f'player:output_{ch}', f'cinema:playback_{ch}') in calls
+
+
+def test_playback_route_checks_unlinked_output_ports_as_well_as_linked_ones(monkeypatch):
+    from eqspace.core.pipewire import control
+    class Registry:
+        def snapshot(self):
+            return PwSnapshot(streams=(PwNode(42, 'player', None, 'Stream/Output/Audio', None, None),))
+    monkeypatch.setattr(control, 'is_system_routed', lambda *a, **k: True)
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **k: {
+        'player:output_FL': ['eqspace.test:playback_FL'],
+    })
+    def runner(cmd, timeout):
+        assert cmd == ['pw-link', '-o']
+        return 'player:output_FL\nplayer:output_FR\n'
+    with pytest.raises(PipeWireControlError, match='output_FR'):
+        control.verify_playback_route('eqspace.test', Registry(), runner=runner)
+
+
+def test_playback_route_rejects_duplicate_destinations_even_inside_target(monkeypatch):
+    from eqspace.core.pipewire import control
+    class Registry:
+        def snapshot(self):
+            return PwSnapshot(streams=(PwNode(42, 'player', None, 'Stream/Output/Audio', None, None),))
+    monkeypatch.setattr(control, 'is_system_routed', lambda *a, **k: True)
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **k: {
+        'player:output_FL': ['eqspace.test:playback_FL', 'eqspace.test:playback_FR'],
+    })
+    with pytest.raises(PipeWireControlError, match='output_FL'):
+        control.verify_playback_route('eqspace.test', Registry(), runner=lambda *a: 'player:output_FL\n')
+
+
+def test_relink_recovers_missing_right_channel_from_output_port_inventory(monkeypatch):
+    from eqspace.core.pipewire import control
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **k: {
+        'player:output_FL': ['old:playback_FL'],
+    })
+    calls = []
+    def runner(cmd, timeout):
+        calls.append(cmd)
+        if cmd == ['pw-link', '-i']:
+            return 'eqspace.test:playback_FL\neqspace.test:playback_FR\n'
+        if cmd == ['pw-link', '-o']:
+            return 'player:output_FL\nplayer:output_FR\n'
+        return ''
+    control.relink_stream_ports('player', 'eqspace.test', runner=runner)
+    assert ['pw-link', 'player:output_FR', 'eqspace.test:playback_FR'] in calls
+
+
+def test_playback_route_rejects_swapped_stereo_channels(monkeypatch):
+    from eqspace.core.pipewire import control
+    class Registry:
+        def snapshot(self):
+            return PwSnapshot(streams=(PwNode(42, 'player', None, 'Stream/Output/Audio', None, None),))
+    monkeypatch.setattr(control, 'is_system_routed', lambda *a, **k: True)
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **k: {
+        'player:output_FL': ['eqspace.test:playback_FR'],
+        'player:output_FR': ['eqspace.test:playback_FL'],
+    })
+    with pytest.raises(PipeWireControlError, match='playback route'):
+        control.verify_playback_route('eqspace.test', Registry(), runner=lambda *a: '')
+
+
+def test_observed_stream_retries_transient_missing_registry_node(monkeypatch):
+    from eqspace.core.pipewire import control
+    stream = PwNode(42, 'player', None, 'Stream/Output/Audio', None, None)
+    class Registry:
+        def snapshot(self):
+            return PwSnapshot(streams=(stream,))
+    monkeypatch.setattr(control, 'get_active_output_links', lambda **k: {
+        'player:output_FL': ['old:playback_FL'], 'player:output_FR': ['old:playback_FR']})
+    attempts = []
+    def move(*args, **kwargs):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise PipeWireControlError('no such stream node: player')
+    monkeypatch.setattr(control, 'move_stream', move)
+    control._move_observed_stream(stream, 'new', Registry(), None, 1.0)
+    assert len(attempts) == 2

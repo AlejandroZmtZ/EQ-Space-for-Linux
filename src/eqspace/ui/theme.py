@@ -16,6 +16,17 @@ QTabBar::tab {
 }
 QTabBar::tab:selected { background: #33353c; color: #ffffff; }
 QTabBar::tab:hover:!selected { background: #2c2d33; }
+QFrame#appBrandHeader {
+    background-color: #17191f;
+    border: 1px solid #33353c;
+    border-radius: 8px;
+}
+QLabel#appBrandTitle {
+    font-size: 23px;
+    font-weight: 700;
+    color: #ffffff;
+    background-color: transparent;
+}
 QPushButton {
     background-color: #3a3d46;
     border: 1px solid #4a4d57;

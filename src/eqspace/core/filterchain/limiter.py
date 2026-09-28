@@ -120,7 +120,7 @@ def render_limiter_args(capability: LimiterCapability, node_name: str) -> str:
         f'outputs = [ "limiter:{left_out}" "limiter:{right_out}" ] }} '
         f'capture.props = {{ node.name = "{node_name}" media.class = "Audio/Sink" '
         'audio.channels = 2 audio.position = [ FL FR ] } '
-        f'playback.props = {{ node.name = "{node_name}.playback" node.passive = true '
+        f'playback.props = {{ node.name = "{node_name}.playback" node.passive = true node.autoconnect = false '
         'audio.channels = 2 audio.position = [ FL FR ] }'
     )
 

@@ -29,7 +29,7 @@ class SystemTrayManager(QObject):
         self.tray_icon = QSystemTrayIcon(parent)
         if icon is None:
             from importlib import resources
-            icon_path = resources.files("eqspace.data") / "icons" / "eqspace.svg"
+            icon_path = resources.files("eqspace.data") / "icons" / "eqspace-tray.svg"
             if icon_path.is_file():
                 icon = QIcon(str(icon_path))
         if icon and not icon.isNull():

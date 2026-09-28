@@ -1,0 +1,52 @@
+{
+  "name": "acoustic_presence_custom",
+  "display_name": "Acoustic Presence",
+  "description": "Warm bass, defined acoustic instruments and gently lifted upper frequencies. Creative tuning with automatic headroom; preserves Spatial and LSP selections.",
+  "research_basis": "Creative EQ preset; not a measured headphone correction.",
+  "bands": [
+    {
+      "band_type": "peaking",
+      "freq_hz": 50.860001,
+      "gain_db": 2.0,
+      "q": 2.0,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 161.117096,
+      "gain_db": 3.03,
+      "q": 2.737867,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 1000.0,
+      "gain_db": 2.0,
+      "q": 3.4,
+      "enabled": true
+    },
+    {
+      "band_type": "high_shelf",
+      "freq_hz": 4500.0,
+      "gain_db": 1.0,
+      "q": 3.1,
+      "enabled": true
+    },
+    {
+      "band_type": "peaking",
+      "freq_hz": 8000.0,
+      "gain_db": 0.7,
+      "q": 3.4,
+      "enabled": true
+    },
+    {
+      "band_type": "high_shelf",
+      "freq_hz": 13334.345703,
+      "gain_db": 0.746183,
+      "q": 2.3,
+      "enabled": true
+    }
+  ],
+  "preamp_db": -0.5,
+  "automatic_headroom": true
+}

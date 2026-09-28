@@ -104,6 +104,7 @@ def test_render_config_contains_graph_and_params():
     assert 'node.name = "eqspace.test"' in conf
     assert 'media.class = "Audio/Sink"' in conf
     assert "node.passive = true" in conf
+    assert "node.autoconnect = false" in conf
     assert "links = [" in conf
     assert '{ output = "band_0:Out" input = "band_1:In" }' in conf
     assert "audio.channels = 2" in conf
@@ -125,6 +126,7 @@ def test_render_args_is_single_line_properties_string():
     assert "audio.channels = 2" in args
     assert 'media.class = "Audio/Sink"' in args
     assert "node.passive = true" in args
+    assert "node.autoconnect = false" in args
     assert "links = [" in args
     assert '{ output = "band_0:Out" input = "band_1:In" }' in args
 
@@ -137,6 +139,7 @@ def test_render_args_contains_expected_keys():
     assert 'node.name = "eqspace.test.playback"' in args
     assert 'media.class = "Audio/Sink"' in args
     assert "node.passive = true" in args
+    assert "node.autoconnect = false" in args
     assert "links = [" in args
     assert '{ output = "band_0:Out" input = "band_1:In" }' in args
 
@@ -453,3 +456,13 @@ def test_module_args_manager_update_args_transitions_cleanly():
 
     manager.unload()
     assert not manager.is_loaded
+
+
+def test_read_controls_skips_removal_event_before_initial_snapshot():
+    import json
+    snapshot = [{"id": 99, "type": "PipeWire:Interface:Node", "info": {
+        "props": {"node.name": "eqspace.test"},
+        "params": {"Props": [{"params": ["preamp:Mult", .25, "preamp:Add", 0]}]}}}]
+    raw = '[{"id": 55, "info": null}]\n' + json.dumps(snapshot)
+    manager = FilterChainManager(node_name='eqspace.test', runner=lambda *_: raw)
+    assert manager._read_controls(1) == {'preamp:Mult': .25, 'preamp:Add': 0}

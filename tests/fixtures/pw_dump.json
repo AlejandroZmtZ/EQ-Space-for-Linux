@@ -6,8 +6,8 @@
     "permissions": ["r", "x", "m"],
     "info": {
       "cookie": 2193538869,
-      "user-name": "alex",
-      "host-name": "alex-G7-7790",
+      "user-name": "demo-user",
+      "host-name": "demo-host",
       "version": "1.0.5",
       "name": "pipewire-0",
       "props": {

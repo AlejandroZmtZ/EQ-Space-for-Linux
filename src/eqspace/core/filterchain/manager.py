@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional, Sequence, Union
 
-from ..pipewire.registry import PipeWireRegistry, PipeWireUnavailable, Runner
+from ..pipewire.registry import PipeWireRegistry, PipeWireUnavailable, Runner, decode_pw_dump
 
 COMMAND_TIMEOUT = 5.0
 logger = logging.getLogger(__name__)
@@ -143,7 +143,7 @@ class FilterChainManager:
             f"audio.position = [ {positions} ] }} "
             "playback.props = { "
             f"node.name = {_spa_quote(self.node_name + '.playback')} "
-            "node.passive = true "
+            "node.passive = true node.autoconnect = false "
             f"audio.channels = {len(channels)} "
             f"audio.position = [ {positions} ] }}"
         )
@@ -212,6 +212,7 @@ class FilterChainManager:
             "      playback.props = {\n"
             f"        node.name = {_spa_quote(self.node_name + '.playback')}\n"
             "        node.passive = true\n"
+            "        node.autoconnect = false\n"
             f"        audio.channels = {len(channels)}\n"
             f"        audio.position = [ {positions} ]\n"
             "      }\n"
@@ -381,7 +382,7 @@ class FilterChainManager:
     def _read_controls(self, timeout: float) -> dict[str, float]:
         try:
             raw = self._run(["pw-dump"], timeout).lstrip()
-            entries, _ = json.JSONDecoder().raw_decode(raw)
+            entries = decode_pw_dump(raw)
             for entry in entries:
                 info = entry.get("info") or {}
                 if (info.get("props") or {}).get("node.name") != self.node_name:

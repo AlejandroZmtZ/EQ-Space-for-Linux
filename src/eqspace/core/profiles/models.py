@@ -1,13 +1,13 @@
 """Profile schema: versioned pydantic models for saved EQ configurations."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 import math
 
 from eqspace.core.dsp.filter_design import EQBand, VALID_BAND_TYPES
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class BandModel(BaseModel):
@@ -67,6 +67,8 @@ class EQProfile(BaseModel):
     spatial_enabled: bool | None = False
     automatic_headroom: bool = True
     limiter_enabled: bool = False
+    scope: Literal["eq", "playback"] = "playback"
+    eq_enabled: bool = True
 
     @model_validator(mode="before")
     @classmethod
@@ -79,7 +81,7 @@ class EQProfile(BaseModel):
 
     @model_validator(mode="after")
     def _supported_version(self) -> "EQProfile":
-        if self.version not in (1, 2, 3):
+        if self.version not in (1, 2, 3, 4):
             raise ValueError(f"unsupported profile version {self.version}")
         return self
 

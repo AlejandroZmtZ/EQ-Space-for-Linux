@@ -18,5 +18,5 @@ def test_app_module_imports():
 def test_main_window_constructs(qapp):
     from eqspace.ui.main_window import MainWindow
 
-    window = MainWindow()
+    window = MainWindow(restore_profile=False)
     assert window.windowTitle() == "EQ-Space"

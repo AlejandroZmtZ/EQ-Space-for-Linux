@@ -113,9 +113,7 @@ def test_save_as_profile_from_peq(qapp, tmp_path, monkeypatch):
         poll_interval_ms=0,
         restore_profile=False,
     )
-    monkeypatch.setattr(
-        QInputDialog, "getText", staticmethod(lambda *a, **k: ("my-preset", True))
-    )
+    monkeypatch.setattr(window.presets, "_request_save_details", lambda profile: ("my-preset", "playback"))
     window.peq.save_profile_requested.emit(list(window.peq.bands))
     profile = storage.load_profile("my-preset")
     assert profile.name == "my-preset"
@@ -138,9 +136,7 @@ def test_save_captures_spatial_and_mic(qapp, tmp_path, monkeypatch):
     window.spatial.set_state({"layout": "7.1", "wet": 40, "crossfeed": True})
     window.mic.set_state({"enabled": True, "strength": 80})
 
-    monkeypatch.setattr(
-        QInputDialog, "getText", staticmethod(lambda *a, **k: ("full-setup", True))
-    )
+    monkeypatch.setattr(window.presets, "_request_save_details", lambda profile: ("full-setup", "playback"))
     window.peq.save_profile_requested.emit(list(window.peq.bands))
 
     profile = storage.load_profile("full-setup")

@@ -32,6 +32,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from eqspace.core.dsp.spatial import prepare_spatial
+from eqspace.core.filterchain.spatial import HYBRID_DESCRIPTION, hybrid_controls
+
 from eqspace.core.dsp.crossfeed import render_crossfeed_chain_args
 from eqspace.core.dsp.headroom import crossfeed_peak_db, spatial_peak_db
 from eqspace.core.dsp.hrtf import (
@@ -65,6 +68,8 @@ PROFILE_CROSSFEED_MEIER = "Natural Crossfeed — Meier (Warm Acoustic Blend)"
 PROFILE_STUDIO_MONITOR = "Studio Monitor (Nearfield ±30°)"
 PROFILE_CUSTOM_SOFA = "Custom SOFA Profile (External File)"
 
+PROFILE_HYBRID = HYBRID_DESCRIPTION
+
 PROFILES = [
     PROFILE_HOLOSPACE,
     PROFILE_CINEMA_71,
@@ -72,20 +77,27 @@ PROFILES = [
     PROFILE_CROSSFEED_MEIER,
     PROFILE_STUDIO_MONITOR,
     PROFILE_CUSTOM_SOFA,
+    PROFILE_HYBRID,
 ]
 
 PROFILE_DESCRIPTIONS = {
+    PROFILE_HYBRID: (
+        "Designed to make stereo music feel wider and more speaker-like while keeping vocals grounded "
+        "and bringing acoustic instruments and room ambience forward. Its spatial cues use a synthetic "
+        "model, and the listening benefits have not yet been checked in controlled, level-matched sessions; "
+        "the effect can vary with headphones and recordings. That is why HS+ remains experimental."
+    ),
     PROFILE_HOLOSPACE: (
         "Expands standard stereo into a 3D holographic soundstage with front dialogue focus, "
         "pinna height cues, and subtle cinema room reflections. "
         "Best for: Movies, gaming, and immersive music on headphones."
     ),
     PROFILE_CINEMA_71: (
-        "Virtualizes a full 7.1 room speaker layout convolved with KEMAR head impulse responses. "
-        "Best for: Multichannel movies and games."
+        "Uses a synthetic headphone model to place sound in a virtual 7.1 room. "
+        "Supports stereo expansion or native multichannel input for movies and games."
     ),
     PROFILE_CROSSFEED_BAUER: (
-        "Blends low frequencies between channels with ~250µs delay to alleviate harsh ear isolation. "
+        "Blends low frequencies between channels to soften extreme left/right separation. "
         "Best for: Classic rock, jazz, and vintage hard-panned stereo recordings."
     ),
     PROFILE_CROSSFEED_MEIER: (
@@ -93,8 +105,8 @@ PROFILE_DESCRIPTIONS = {
         "Best for: Natural acoustic recordings and extended listening sessions."
     ),
     PROFILE_STUDIO_MONITOR: (
-        "Emulates precision nearfield reference monitors in a treated room. "
-        "Best for: Critical listening and music production."
+        "Uses a synthetic headphone model to suggest a pair of speakers in front of you. "
+        "An experimental nearfield presentation for comparing stereo recordings."
     ),
     PROFILE_CUSTOM_SOFA: (
         "Loads custom Head-Related Transfer Function measurement files. "
@@ -134,6 +146,10 @@ class SpatialWidget(QWidget):
         self._pysofa_available = pysofa_available or _default_pysofa_available
         self._syncing = False
         self.estimated_peak_db = 0.0
+        self.estimated_peak_gain_db = 0.0
+        self.on_live_controls_changed = None
+        self.action_dispatcher = None
+        self._applied_state = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setSpacing(12)
@@ -186,6 +202,7 @@ class SpatialWidget(QWidget):
             lambda value: self.wetdry_label.setText(f"{value}%")
         )
         root_layout.addWidget(self.wetdry_group)
+        self.wetdry_slider.valueChanged.connect(self._on_live_slider_changed)
         self.stereo_expansion_check = QCheckBox("Cinema: expand stereo across the virtual room")
         self.stereo_expansion_check.setChecked(True)
         self.stereo_expansion_check.setToolTip(
@@ -267,7 +284,7 @@ class SpatialWidget(QWidget):
         self._syncing = True
         try:
             self.info_desc_label.setText(PROFILE_DESCRIPTIONS.get(profile_name, ""))
-            if profile_name == PROFILE_HOLOSPACE:
+            if profile_name in (PROFILE_HOLOSPACE, PROFILE_HYBRID):
                 self.crossfeed_check.setChecked(False)
                 self.layout_combo.setCurrentText("HoloSpace 3D")
                 self.sofa_combo.setCurrentIndex(0)
@@ -308,7 +325,7 @@ class SpatialWidget(QWidget):
             self.crossfeed_combo.setEnabled(is_cf)
             self.sofa_combo.setEnabled(not is_cf)
             self.layout_combo.setEnabled(not is_cf)
-            self.wetdry_slider.setEnabled(not is_cf)
+            self.wetdry_slider.setEnabled(True)
             self.stereo_expansion_check.setVisible(profile_name == PROFILE_CINEMA_71)
             self._update_availability()
         finally:
@@ -318,7 +335,7 @@ class SpatialWidget(QWidget):
         self.crossfeed_combo.setEnabled(checked)
         self.sofa_combo.setEnabled(not checked)
         self.layout_combo.setEnabled(not checked)
-        self.wetdry_slider.setEnabled(not checked)
+        self.wetdry_slider.setEnabled(True)
         if checked:
             self.layout_hint_label.setText(
                 "Virtual surround layout disabled while crossfeed is active."
@@ -337,7 +354,7 @@ class SpatialWidget(QWidget):
         self._update_availability()
 
     def _sync_profile_from_controls(self) -> None:
-        if self._syncing:
+        if self._syncing or self.is_hybrid_selected():
             return
         self._syncing = True
         try:
@@ -476,67 +493,88 @@ class SpatialWidget(QWidget):
         if not internal and not self.mutation_allowed():
             self.status_label.setText("Wait for Apply to finish before changing Spatial.")
             return
-        if self.manager is None:
-            return
-
         graph = getattr(self, "graph_controller", None)
-        if graph is not None:
-            try:
-                self.fs = graph.registry.graph_rate(required=True)
-            except Exception as exc:
-                self.status_label.setText(f"Apply failed: graph rate unavailable: {exc}")
-                return
-
-        is_crossfeed = self.crossfeed_check.isChecked()
-        node_name = "eqspace.crossfeed" if is_crossfeed else "eqspace.spatial"
-
-        if is_crossfeed:
-            mode = self.crossfeed_combo.currentText()
-            try:
-                args = render_crossfeed_chain_args(preset=mode.lower(), fs=self.fs)
-                self.estimated_peak_db = crossfeed_peak_db(mode, self.fs)
-            except Exception as exc:
-                self.status_label.setText(f"Apply failed: {exc}")
-                return
-        else:
-            layout = self.selected_layout()
-            sofa = self.selected_sofa()
-            if sofa is None or (layout == "HoloSpace 3D" and is_builtin_kemar(sofa)):
-                sofa = holospace_default_path() if layout == "HoloSpace 3D" else builtin_kemar_path()
-            try:
-                args = self.render_chain_args(sofa)
-            except HRTFUnavailable:
-                self.status_label.setText(NO_PYSOFA_MESSAGE)
-                return
-            except Exception as exc:
-                self.status_label.setText(f"Apply failed: {exc}")
-                return
-
-        if graph is not None:
-            try:
-                graph.switch_spatial(args, self.estimated_peak_db)
-            except Exception as exc:
-                self.status_label.setText(f"Apply failed: {exc}")
-                return
-            self.status_label.setText("Spatial active · route verified")
+        if graph is None:
+            self.status_label.setText("Apply failed: audio graph controller unavailable")
             return
-
-        self.status_label.setText("Apply failed: audio graph controller unavailable")
+        state = self.get_state()
+        def backend():
+            fs = graph.registry.graph_rate(required=True)
+            args, peak, name = prepare_spatial(state, fs)
+            graph.switch_spatial(args, peak)
+            return fs, peak, name
+        def finished(success, message, result):
+            if not success:
+                self.status_label.setText(f"Apply failed: {message}")
+                return
+            self.fs, self.estimated_peak_db, _ = result
+            self.estimated_peak_gain_db = self.estimated_peak_db
+            self._applied_state = dict(state)
+            self.status_label.setText("Spatial active · route verified")
+        if self.action_dispatcher is not None and not internal:
+            self.action_dispatcher("Apply Spatial", backend, finished)
+        else:
+            try:
+                result = backend()
+            except Exception as exc:
+                finished(False, str(exc), None)
+            else:
+                finished(True, "", result)
 
     def unload(self) -> None:
         if not self.mutation_allowed():
             self.status_label.setText("Wait for Apply to finish before changing Spatial.")
             return
         graph = getattr(self, "graph_controller", None)
-        if graph is not None:
+        if graph is None:
+            self.status_label.setText("Spatial Off failed: audio graph controller unavailable")
+            return
+        def finished(success, message, result):
+            if success:
+                self._applied_state = None
+                self.status_label.setText("Spatial off · route verified")
+            else:
+                self.status_label.setText(f"Spatial Off failed: {message}")
+        if self.action_dispatcher is not None:
+            self.action_dispatcher("Spatial Off", graph.spatial_off, finished)
+        else:
             try:
                 graph.spatial_off()
             except Exception as exc:
-                self.status_label.setText(f"Spatial Off failed: {exc}")
-                return
-            self.status_label.setText("Spatial off · route verified")
+                finished(False, str(exc), None)
+            else:
+                finished(True, "", None)
+
+    def is_hybrid_selected(self) -> bool:
+        return self.profile_combo.currentText() == PROFILE_HYBRID
+
+    def hybrid_controls(self) -> dict[str, float]:
+        return hybrid_controls(self.wetdry_slider.value()/100)
+
+    def _on_live_slider_changed(self, value) -> None:
+        if self._syncing or self._applied_state is None:
             return
-        self.status_label.setText("Spatial Off failed: audio graph controller unavailable")
+        if self.profile_combo.currentText() != self._applied_state.get("profile"):
+            return
+        if self.on_live_controls_changed is None:
+            return
+        state = dict(self._applied_state)
+        state['wet'] = self.wetdry_slider.value()
+        if self.is_hybrid_selected():
+            controls = self.hybrid_controls()
+        elif not state.get('crossfeed', False):
+            count = len(LAYOUT_CHANNEL_SPEAKER_MAP[str(state['layout'])])
+            gain = max(state['wet']/100, 1e-6)/count
+            controls = {f"mix_{ear}:Gain {index}": gain for ear in ('l','r') for index in range(1, count+1)}
+        else:
+            from eqspace.core.dsp.crossfeed import CROSSFEED_PRESETS
+            feed = 10**(CROSSFEED_PRESETS[str(state['crossfeed_mode']).lower()].feed_db/20)
+            controls = {f'mix_{ear}:Gain {branch}': state['wet']/100 * gain
+                        for ear in ('l','r') for branch, gain in ((1,1),(2,feed))}
+        # Root's callback coalesces and performs preparation/update in a worker.
+        # A pure snapshot is available to that callback; no widget access needed.
+        self._pending_live_state = state
+        self.on_live_controls_changed(controls, self.estimated_peak_gain_db)
 
     # ---- state export / import ----------------------------------------------
 
@@ -591,9 +629,15 @@ class SpatialWidget(QWidget):
         finally:
             self._syncing = False
 
-        if "profile" in state and str(state["profile"]) in PROFILES:
-            self.profile_combo.setCurrentText(str(state["profile"]))
-            self._on_profile_changed(str(state["profile"]))
+        if "profile" in state:
+            profile = str(state["profile"])
+            if profile in ("HS+", "HoloSpace + Meier (Experimental)", "HaloSpace + Meier (Experimental)"):
+                profile = PROFILE_HYBRID
+            if profile in PROFILES:
+                self.profile_combo.setCurrentText(profile)
+                self._on_profile_changed(profile)
+            else:
+                self._sync_profile_from_controls()
         else:
             self._sync_profile_from_controls()
         self._update_availability()

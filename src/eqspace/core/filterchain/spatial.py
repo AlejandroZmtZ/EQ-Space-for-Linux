@@ -175,6 +175,7 @@ class SpatialChainRenderer:
             "      playback.props = {\n"
             f"        node.name = {_spa_quote(self.node_name + '.playback')}\n"
             "        node.passive = true\n"
+            "        node.autoconnect = false\n"
             "        audio.channels = 2\n"
             f"        audio.position = [ FL FR ]\n"
             "      }\n"
@@ -290,7 +291,7 @@ class SpatialChainRenderer:
             f"media.name = {_spa_quote(self.description)} "
             f"filter.graph = {{ nodes = [ {nodes_str} ] links = [ {links_str} ] inputs = [ {inputs_str} ] outputs = [ {outputs_str} ] }} "
             f"capture.props = {{ node.name = {_spa_quote(self.node_name)} media.class = \"Audio/Sink\" audio.channels = {len(channels)} audio.position = [ {positions_str} ] }} "
-            f"playback.props = {{ node.name = {_spa_quote(self.node_name + '.playback')} node.passive = true audio.channels = 2 audio.position = [ FL FR ] }}"
+            f"playback.props = {{ node.name = {_spa_quote(self.node_name + '.playback')} node.passive = true node.autoconnect = false audio.channels = 2 audio.position = [ FL FR ] }}"
         )
 
 
@@ -335,3 +336,74 @@ def render_from_ir_paths(
     return SpatialChainRenderer(node_name=node_name, description=description).render_config(
         speakers, gain=gain, channels=channels
     )
+
+
+HYBRID_DESCRIPTION = "HS+ (Experimental)"
+LEGACY_HYBRID_DESCRIPTIONS = ("HS+", "HoloSpace + Meier (Experimental)", "HaloSpace + Meier (Experimental)")
+HYBRID_COMMON_DELAY_SAMPLES = 10
+HYBRID_HOLO_WEIGHT = 0.6
+HYBRID_MEIER_WEIGHT = 0.4
+HYBRID_CUTOFF_HZ = 1400.0
+
+
+def hybrid_controls(level: float = 1.0) -> dict[str, float]:
+    """Fixed 60/40 blend in one control batch; zero level mutes both branches."""
+    import math
+    if not math.isfinite(level) or not 0 <= level <= 1:
+        raise ValueError("hybrid level must be a finite value between 0 and 1")
+    return {f"hybrid_{ear}:Gain {branch}": level * weight
+            for ear in ("l", "r")
+            for branch, weight in ((1, HYBRID_HOLO_WEIGHT), (2, HYBRID_MEIER_WEIGHT))}
+
+
+def render_hybrid_chain_args(
+    ir_paths: Mapping[float, Tuple[Path, Path]], fs: float,
+    level: float = 1.0,
+    node_name: str = DEFAULT_NODE_NAME,
+) -> str:
+    """Fixed parallel HoloSpace / 1400 Hz Meier blend in one native graph.
+
+    A whole-branch delay aligns Meier's direct onset with HoloSpace's common
+    ten-sample pre-delay. HoloSpace ITD and reflections stay in the original IRs.
+    """
+    import math
+    import re
+    if not math.isfinite(fs) or fs <= 2 * HYBRID_CUTOFF_HZ:
+        raise ValueError(f"hybrid graph rate must be finite and above {2 * HYBRID_CUTOFF_HZ:g} Hz")
+    controls = hybrid_controls(level)
+    speakers = [SpeakerIR(az, *ir_paths[az], channel=ch)
+                for ch, az in LAYOUT_CHANNEL_SPEAKER_MAP["HoloSpace 3D"]]
+    args = SpatialChainRenderer(node_name, HYBRID_DESCRIPTION).render_args(speakers)
+    # Reuse the standalone Holo graph verbatim, including its center mapping and
+    # 1/5 speaker normalization. Only append the parallel branch/output mixers.
+    args = args.replace('mix_l', 'h_mix_l').replace('mix_r', 'h_mix_r')
+    pattern = r'filter.graph = \{ nodes = \[ (.*?) \] links = \[ (.*?) \] inputs = \[ (.*?) \] outputs = \[ (.*?) \] \}'
+    match = re.search(pattern, args)
+    if match is None:
+        raise ValueError("cannot resolve HoloSpace graph")
+    nodes, links, inputs, _ = match.groups()
+    feed = 10 ** (-4.5 / 20)
+    # Native delay truncates float seconds*rate. A quarter-sample interior
+    # offset prevents float32 rounding below ten without changing the delay.
+    seconds = (HYBRID_COMMON_DELAY_SAMPLES + .25) / fs
+    additions, connections = [], []
+    for ear, source, opposite in (("l", "FL", "FR"), ("r", "FR", "FL")):
+        additions.extend([
+            f'{{ type = builtin label = bq_lowpass name = "m_lp_{ear}" control = {{ "Freq" = {HYBRID_CUTOFF_HZ:g} "Q" = 0.5 }} }}',
+            f'{{ type = builtin label = mixer name = "m_mix_{ear}" control = {{ "Gain 1" = 1 "Gain 2" = {feed:.12g} }} }}',
+            f'{{ type = builtin label = delay name = "m_delay_{ear}" config = {{ max-delay = 0.01 }} control = {{ "Delay (s)" = {seconds:.12g} }} }}',
+            f'{{ type = builtin label = mixer name = "hybrid_{ear}" control = {{ "Gain 1" = {controls[f"hybrid_{ear}:Gain 1"]:.12g} "Gain 2" = {controls[f"hybrid_{ear}:Gain 2"]:.12g} }} }}',
+        ])
+        for output, input_port in (
+            (f"copy_{source}:Out", f"m_mix_{ear}:In 1"),
+            (f"copy_{opposite}:Out", f"m_lp_{ear}:In"),
+            (f"m_lp_{ear}:Out", f"m_mix_{ear}:In 2"),
+            (f"m_mix_{ear}:Out", f"m_delay_{ear}:In"),
+            (f"h_mix_{ear}:Out", f"hybrid_{ear}:In 1"),
+            (f"m_delay_{ear}:Out", f"hybrid_{ear}:In 2"),
+        ):
+            connections.append(f'{{ output = "{output}" input = "{input_port}" }}')
+    graph = (f'filter.graph = {{ nodes = [ {nodes} {" ".join(additions)} ] '
+             f'links = [ {links} {" ".join(connections)} ] inputs = [ {inputs} ] '
+             'outputs = [ "hybrid_l:Out" "hybrid_r:Out" ] }')
+    return args[:match.start()] + graph + args[match.end():]

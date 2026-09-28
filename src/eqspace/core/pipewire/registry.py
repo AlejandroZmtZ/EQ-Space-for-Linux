@@ -180,6 +180,34 @@ class MonitorHandle:
         self._thread.join(timeout)
 
 
+def decode_pw_dump(raw: str) -> Any:
+    """Locate initial enumeration even when removal events precede it.
+
+    Concurrent clients can make pw-dump emit a tombstone array before the full
+    registry. Validate every document and prefer the enumeration containing Core;
+    synthetic node-only snapshots remain supported for injected runners.
+    """
+    decoder = json.JSONDecoder()
+    remaining = raw.lstrip()
+    documents = []
+    while remaining:
+        document, end = decoder.raw_decode(remaining)
+        documents.append(document)
+        remaining = remaining[end:].lstrip()
+    if not documents:
+        raise ValueError("empty pw-dump output")
+    for document in documents:
+        if isinstance(document, list) and any(isinstance(entry, dict) and
+                entry.get("type") == "PipeWire:Interface:Core" for entry in document):
+            return document
+    for document in documents:
+        if isinstance(document, list) and any(isinstance(entry, dict) and
+                (entry.get("type") or (isinstance(entry.get("info"), dict)
+                 and entry["info"].get("props"))) for entry in document):
+            return document
+    return documents[0]
+
+
 class PipeWireRegistry:
     """Snapshots and polls the PipeWire object registry via ``pw-dump``."""
 
@@ -208,17 +236,8 @@ class PipeWireRegistry:
         except RuntimeError as exc:
             raise PipeWireUnavailable(str(exc)) from exc
         try:
-            decoder = json.JSONDecoder()
-            content = raw.lstrip()
-            data, end = decoder.raw_decode(content)
-            # During rapid graph changes pw-dump can append another JSON
-            # document. Its first document is the complete registry snapshot;
-            # validate any trailing documents, then use that snapshot.
-            rest = content[end:].lstrip()
-            while rest:
-                _, end = decoder.raw_decode(rest)
-                rest = rest[end:].lstrip()
-        except (json.JSONDecodeError, TypeError) as exc:
+            data = decode_pw_dump(raw)
+        except (ValueError, TypeError) as exc:
             raise PipeWireUnavailable(f"pw-dump returned invalid JSON: {exc}") from exc
         return parse_pw_dump(data)
 

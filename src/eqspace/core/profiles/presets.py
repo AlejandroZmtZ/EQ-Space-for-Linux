@@ -25,6 +25,9 @@ class Preset(BaseModel):
     bands: list[BandModel] = Field(default_factory=list)
     spatial: dict[str, Any] = Field(default_factory=dict)
     mic: dict[str, Any] = Field(default_factory=dict)
+    preamp_db: float = Field(default=0.0, ge=-24, le=12, allow_inf_nan=False)
+    automatic_headroom: bool = True
+    display_name: str | None = None
     volume: float = Field(default=1.0, ge=0.0, le=2.0)
 
     def to_bands(self):
@@ -33,12 +36,15 @@ class Preset(BaseModel):
     def to_profile(self) -> EQProfile:
         return EQProfile(
             name=self.name,
-            bands=self.bands,
+            bands=[band.model_copy(deep=True) for band in self.bands],
             spatial=self.spatial,
             spatial_enabled=None,
             mic=self.mic,
             volume=self.volume,
-            automatic_headroom=True,
+            automatic_headroom=self.automatic_headroom,
+            preamp_db=self.preamp_db,
+            scope="eq",
+            eq_enabled=True,
         )
 
 

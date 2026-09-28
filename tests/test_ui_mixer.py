@@ -84,6 +84,21 @@ class FakeRegistry:
         return self._snapshot
 
 
+def test_poll_started_before_output_change_is_discarded(qapp, monkeypatch):
+    widget = MixerWidget(registry=FakeRegistry(PwSnapshot()), control=FakeControl(), poll_interval_ms=0)
+    widget._observing_revision = 0
+    widget._refresh_worker = object()
+    rendered, retries = [], []
+    monkeypatch.setattr(widget, '_render_snapshot', lambda snapshot: rendered.append(snapshot))
+    monkeypatch.setattr(widget, 'refresh', lambda: retries.append(True))
+    widget.invalidate_observation()
+    widget._finish_observation(True, '', {'snapshot': PwSnapshot(), 'volume': .37})
+    assert not rendered
+    assert retries == [True]
+    assert widget._refresh_worker is None
+    widget.close()
+
+
 def _snapshot(with_chain=False):
     sinks = [
         PwNode(40, "alsa_output.pci", "Built-in Audio", "Audio/Sink", 1.0, False),

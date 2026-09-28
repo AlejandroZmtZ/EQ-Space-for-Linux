@@ -8,6 +8,7 @@ they are exercised here only through injected runners, not in CI.
 from __future__ import annotations
 
 import time
+import subprocess
 from typing import Optional, Sequence
 
 from .registry import (
@@ -222,20 +223,24 @@ def verify_playback_route(
     runner: Optional[Runner] = None,
     timeout: float = COMMAND_TIMEOUT,
 ) -> None:
-    """Check the default and every linked channel of active application streams."""
+    """Check the default and every observed application output, including unlinked ports."""
     if not is_system_routed(filter_node_name, runner=runner, registry=registry, timeout=timeout):
         raise PipeWireControlError(f"default route to {filter_node_name} is unverified")
     links = get_active_output_links(runner=runner, timeout=timeout)
+    # -l alone can omit a disconnected channel. Enumerate the actual output ports
+    # independently so partial/stale application routing cannot pass the commit gate.
+    output_ports = set(_run(["pw-link", "-o"], runner, timeout).splitlines()) | set(links)
     for stream in registry.snapshot().streams:
         if ("Output" not in stream.media_class or not stream.name or
             stream.name.startswith("eqspace.") or stream.name.endswith(".playback")):
             continue
-        ports = {port: destinations for port, destinations in links.items()
-                 if port.startswith(f"{stream.name}:output_")}
-        if not ports:
-            continue  # stopped or still initializing; only active playback links are in scope
-        for port, destinations in ports.items():
-            if not destinations or any(not dst.startswith(f"{filter_node_name}:") for dst in destinations):
+        ports = {port for port in output_ports if port.startswith(f"{stream.name}:output_")}
+        for port in ports:
+            destinations = links.get(port, [])
+            channel = port.rsplit(":output_", 1)[-1]
+            stereo_mismatch = (channel in ("FL", "FR") and
+                               destinations != [f"{filter_node_name}:playback_{channel}"])
+            if len(destinations) != 1 or stereo_mismatch or not destinations[0].startswith(f"{filter_node_name}:"):
                 raise PipeWireControlError(f"unverified playback route for {port}: {destinations}")
 
 
@@ -250,7 +255,10 @@ def relink_stream_ports(
     If adding a channel fails, remove only links added by this attempt. The
     original output links remain available throughout that failure path.
     """
-    active_links = get_active_output_links(runner=runner, timeout=timeout)
+    active_links = dict(get_active_output_links(runner=runner, timeout=timeout))
+    for port in _run(["pw-link", "-o"], runner, timeout).splitlines():
+        if port.startswith(f"{stream_name}:output_"):
+            active_links.setdefault(port, [])
     additions: list[tuple[str, str]] = []
     removals: list[tuple[str, str]] = []
     input_ports = set(_run(["pw-link", "-i"], runner, timeout).splitlines())
@@ -312,9 +320,9 @@ def move_stream(
     """Move a playback stream to a different sink.
 
     Implemented by setting the ``target.object`` session metadata key, which
-    WirePlumber honours by relinking the stream. WirePlumber keys metadata by
-    ``object.serial`` rather than node id, so both ids are resolved to their
-    serials against a fresh registry snapshot. On a live system, the port links
+    WirePlumber honours by relinking the stream. The metadata subject is the
+    stream node id; the target.object value is the destination object.serial.
+    Resolve both against a fresh registry snapshot. On a live system, the port links
     are also moved because metadata alone may not trigger a relink.
     """
     registry = registry or PipeWireRegistry(runner=runner)
@@ -322,13 +330,25 @@ def move_stream(
         snapshot = registry.snapshot()
     except PipeWireUnavailable as exc:
         raise PipeWireControlError(str(exc)) from exc
-    stream_serial = _serial_for(snapshot, stream_id, "stream")
+    stream_node = next((node for node in snapshot.streams
+                        if node.id == stream_id or str(node.id) == str(stream_id)
+                        or node.name == str(stream_id)), None)
+    if stream_node is None:
+        raise PipeWireControlError(f"no such stream node: {stream_id}")
     sink_serial = _serial_for(snapshot, sink_id, "sink")
-    _run(
-        ["pw-metadata", str(stream_serial), "target.object", str(sink_serial)],
-        runner,
-        timeout,
-    )
+    command = ["pw-metadata", str(stream_node.id), "target.object", str(sink_serial)]
+    try:
+        _run(command, runner, timeout)
+    except (subprocess.TimeoutExpired, PipeWireControlError) as exc:
+        cause = exc
+        while cause is not None and not isinstance(cause, subprocess.TimeoutExpired):
+            cause = cause.__cause__
+        if cause is None:
+            raise
+        # The write may already have reached WirePlumber. Repeating this
+        # assignment is idempotent; downstream link verification still gates
+        # the graph commit. A second timeout remains a failure.
+        _run(command, runner, timeout)
     # On live systems, also relink active ports; metadata alone does not
     # reliably move streams on every WirePlumber setup.
     if runner is None or not hasattr(runner, "calls"):
@@ -350,16 +370,28 @@ def _move_observed_stream(stream, target: str, registry: PipeWireRegistry,
     """Resolve the current stream by name; a vanished playback stream needs no move."""
     links = get_active_output_links(runner=runner, timeout=timeout)
     if not any(port.startswith(f"{stream.name}:output_") for port in links):
-        return
-    try:
-        move_stream(stream.name, target, runner=runner, timeout=timeout, registry=registry)
-    except PipeWireControlError as exc:
-        live_links = get_active_output_links(runner=runner, timeout=timeout)
-        if "no such stream node" in str(exc) and not any(
-            port.startswith(f"{stream.name}:output_") for port in live_links
-        ):
+        ports = _run(["pw-link", "-o"], runner, timeout).splitlines()
+        if not any(port.startswith(f"{stream.name}:output_") for port in ports):
             return
-        raise
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            move_stream(stream.name, target, runner=runner, timeout=timeout, registry=registry)
+            return
+        except PipeWireControlError as exc:
+            if "no such stream node" not in str(exc):
+                raise
+            live_links = get_active_output_links(runner=runner, timeout=timeout)
+            if not any(port.startswith(f"{stream.name}:output_") for port in live_links):
+                ports = _run(["pw-link", "-o"], runner, timeout).splitlines()
+                if not any(port.startswith(f"{stream.name}:output_") for port in ports):
+                    return  # The stream and its ports actually disappeared.
+            # A fresh pw-dump can briefly omit a stream whose output ports are
+            # still present during rapid policy changes. Resolve again rather
+            # than treating the first incomplete observation as a hard failure.
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def get_default_sink_name(
@@ -369,7 +401,7 @@ def get_default_sink_name(
     """Return the name or id of the default sink from ``wpctl status``.
 
     Parses the Sinks section for the line starting with ``*`` (e.g.
-    ``*   63. WH-CH720N`` or node id), or inspects
+    ``*   63. Wireless Headphones`` or node id), or inspects
     ``Default Configured Node Names: Audio/Sink <name>``.
     """
     import re

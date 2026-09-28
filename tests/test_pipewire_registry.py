@@ -300,3 +300,13 @@ def test_monitor_survives_callback_exceptions(dump_text, caplog):
     assert any(
         "monitor callback" in record.getMessage() for record in caplog.records
     )
+
+
+def test_registry_skips_tombstone_events_before_full_initial_snapshot(dump_text):
+    # Captured during concurrent GUI observations on the private PipeWire daemon:
+    # pw-dump emitted a client-removal event before its full enumeration.
+    raw = '[{"id": 55, "info": null}]\n' + dump_text + '\n[{"id": 56, "info": null}]'
+    registry = PipeWireRegistry(runner=lambda *_: raw)
+    snapshot = registry.snapshot()
+    assert len(snapshot.sinks) == 1
+    assert snapshot.sinks[0].id == 48

@@ -10,7 +10,7 @@ The status line reports whether the DeepFilterNet LADSPA plugin
 (``libdf_ladspa.so``) is installed, via the injectable
 ``deepfilternet_available`` callable (monkeypatched in tests). When the
 plugin is missing, Apply is disabled. The input monitor is a placeholder
-label; routing a real capture stream to it is a later task.
+label; real capture routing is not implemented by this widget.
 """
 
 from __future__ import annotations

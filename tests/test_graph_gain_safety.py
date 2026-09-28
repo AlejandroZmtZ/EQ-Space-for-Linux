@@ -100,7 +100,7 @@ def test_live_edits_coalesce_and_wait_for_apply(window, monkeypatch):
     w.peq.manager = RecordingEQ()
     w.audio_graph.eq_enabled = True
     calls = []
-    monkeypatch.setattr(w, '_on_manual_peq_apply', lambda: calls.append(w.peq.bands[0]))
+    monkeypatch.setattr(w, '_apply_live_eq', lambda: calls.append(w.peq.bands[0]))
     w.peq.set_band(0, freq_hz=2500, gain_db=3)
     w.peq.set_band(0, freq_hz=3000, gain_db=6)
     assert calls == [] and w._live_eq_timer.isActive()

@@ -108,5 +108,5 @@ def render_crossfeed_chain_args(
         "audio.channels = 2 "
         "audio.position = [ FL FR ] "
         f"capture.props = {{ node.name = {_spa_quote(node_name)} media.class = Audio/Sink audio.channels = 2 audio.position = [ FL FR ] }} "
-        f"playback.props = {{ node.name = {_spa_quote(node_name + '.playback')} node.passive = true audio.channels = 2 audio.position = [ FL FR ] }}"
+        f"playback.props = {{ node.name = {_spa_quote(node_name + '.playback')} node.passive = true node.autoconnect = false audio.channels = 2 audio.position = [ FL FR ] }}"
     )

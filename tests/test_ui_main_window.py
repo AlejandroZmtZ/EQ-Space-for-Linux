@@ -22,7 +22,7 @@ class FakeRegistry:
 def test_main_window_constructs_with_tabs(qapp):
     from eqspace.ui.main_window import MainWindow
 
-    window = MainWindow(registry=FakeRegistry(), poll_interval_ms=0)
+    window = MainWindow(registry=FakeRegistry(), poll_interval_ms=0, restore_profile=False)
     assert window.windowTitle() == "EQ-Space"
     titles = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert titles == ["Mixer", "Parametric EQ", "Presets", "Spatial (Experimental)", "Mic (Experimental)"]
@@ -33,14 +33,14 @@ def test_main_window_defaults_construct(qapp):
     # Smoke: no-arg construction must not crash even without PipeWire running.
     from eqspace.ui.main_window import MainWindow
 
-    window = MainWindow(poll_interval_ms=0)
+    window = MainWindow(poll_interval_ms=0, restore_profile=False)
     assert window.tabs.count() == 5
 
 
 def test_peq_tab_present_with_plot(qapp):
     from eqspace.ui.main_window import MainWindow
 
-    window = MainWindow(registry=FakeRegistry(), poll_interval_ms=0)
+    window = MainWindow(registry=FakeRegistry(), poll_interval_ms=0, restore_profile=False)
     assert window.peq.plot is not None
     assert len(window.peq.bands) == 1
 

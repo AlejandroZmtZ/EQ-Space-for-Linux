@@ -26,7 +26,7 @@ def test_missing_plugin_disables_gui_control(monkeypatch):
     window.close_completely()
 
 
-def test_limiter_control_activates_after_eq_route_is_enabled(monkeypatch, tmp_path):
+def test_limiter_control_is_available_without_eq(monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication
     from eqspace.core.pipewire.registry import PwSnapshot
     from eqspace.ui import main_window
@@ -42,7 +42,7 @@ def test_limiter_control_activates_after_eq_route_is_enabled(monkeypatch, tmp_pa
     app = QApplication.instance() or QApplication([])
     window = main_window.MainWindow(registry=Registry(), poll_interval_ms=0,
                                     restore_profile=False)
-    assert not window.peq.limiter_check.isEnabled()
+    assert window.peq.limiter_check.isEnabled()
     window.audio_graph.eq_enabled = True
     window._on_routing_changed(True)
     assert window.peq.limiter_check.isEnabled()
@@ -72,6 +72,11 @@ def test_window_quit_stays_open_when_audio_handoff_fails(monkeypatch):
 
     window.close_completely()
 
+    import time
+    deadline = time.monotonic() + 3
+    while window._graph_worker is not None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(.005)
     assert window.isVisible()
     assert "stream links are unverified" in window.peq.status_label.text()
     monkeypatch.undo()
@@ -153,7 +158,7 @@ def test_manual_apply_preserves_limiter(monkeypatch):
     window._on_manual_peq_apply()
     assert captured[-1].limiter_enabled
     from eqspace.core.profiles.models import EQProfile
-    window._on_preset_apply_requested(EQProfile.from_bands('Flat', []))
+    window._on_preset_apply_requested(EQProfile.from_bands('Flat', [], scope='eq'))
     assert captured[-1].limiter_enabled
     window.audio_graph.limiter_name = None
     window.close_completely()

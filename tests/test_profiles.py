@@ -143,13 +143,13 @@ class TestStorage:
         path.write_text(json.dumps({"name": "legacy", "version": 2,
                                     "preamp_db": -4.5, "spatial": {"layout": "7.1"}}))
         loaded = storage.load_profile("legacy")
-        assert loaded.version == 3
+        assert loaded.version == models.SCHEMA_VERSION
         assert loaded.preamp_db == -4.5
         assert loaded.automatic_headroom is False
         assert loaded.spatial_enabled is None
         storage.save_profile(loaded)
         raw = json.loads(path.read_text())
-        assert raw["version"] == 3 and raw["automatic_headroom"] is False
+        assert raw["version"] == models.SCHEMA_VERSION and raw["automatic_headroom"] is False
 
     def test_new_profile_defaults_to_static_headroom(self, xdg):
         profile = models.EQProfile.from_bands("new", [])

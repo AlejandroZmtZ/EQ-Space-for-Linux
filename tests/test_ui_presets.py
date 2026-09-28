@@ -95,10 +95,11 @@ def test_bypass_changes_active_preset_to_loaded(widget):
 
 
 def test_save_as_profile_persists(widget, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
     from eqspace.core.profiles import storage
+    from eqspace.core.profiles.models import EQProfile
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     widget.preset_list.setCurrentRow(0)
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("my-bright", True)))
+    widget.set_state_supplier(lambda: EQProfile(name="edited", preamp_db=-4.5))
+    monkeypatch.setattr(widget, "_request_save_details", lambda p: ("my-bright", "playback"))
     widget.save_button.click()
     assert storage.load_profile("my-bright").name == "my-bright"
